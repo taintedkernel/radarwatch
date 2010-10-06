@@ -1,0 +1,12 @@
+archive
+backup
+radar
+cache
+overlays
+warnings
+new
+old
+radarwatch*.tar.gz
+*.log
+*.pid
+*.img

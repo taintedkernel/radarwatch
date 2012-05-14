@@ -1,0 +1,34 @@
+main:
+open radar directory
+index images
+	-find timestamp
+process images
+	-if OK add to db
+
+
+process:
+	-parse filename
+	-search DB for image, skip if found and configure to skip
+	-parse image, iterate through pixels
+		-track running counts of DBZ values
+		-record location of "storm" pixels (40+ DBZ)
+	-mark no_storms or no_precip accordingly
+	-iterate through list of "storm" pixels
+		-identify individual storm cells (contiguous storm pixels)
+	-search DB for image
+		-update if found - store metadata, clear dbz data
+		-add if not found - store metadata
+	-insert dbz data (dbz value/image count pairs)
+	-if no storms and deletion enabled then return
+	-clear storm cell data
+	-insert storm cells into db (cellid, radar, size, x, y)
+
+compaction:
+	-run through image lists
+	-find consecutive time periods
+	-find images marked for removal
+	-do analysis on image groups
+	-write gnuplot data files
+
+addToDb:
+	-store raw data in imagedata table

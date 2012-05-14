@@ -13,13 +13,32 @@
 // flags
 #define FLAG_RADAR_NO_PRECIP					1
 #define FLAG_RADAR_NO_STORMS					2
-#define FLAG_RADAR_DELETE						4
-#define FLAG_RADAR_NOREMOVE_CONTINUITY			8
+#define FLAG_RADAR_NO_DATA						4
+#define FLAG_RADAR_BLANK						8
+//#define FLAG_RADAR_NO_DATA						16
+//#define FLAG_RADAR_NO_DATA						32
+//#define FLAG_RADAR_NO_DATA						64
+#define FLAG_RADAR_KEEP_BEFORE					128
+#define FLAG_RADAR_KEEP_AFTER					256
+#define FLAG_RADAR_DELETE						512
+
+
+
+// enums
+#define DATA_AVG_CELL_SIZE						1
+#define DATA_AVG_CELL_SIGMA						2
+#define DATA_MAX_CELL_SIZE						3
+#define DATA_MAX_CELL_SIGMA						4
+#define DATA_MAX_DBZ_VALUE						5
+#define DATA_STORMGROUP_ID						6
+
+
 
 /*** Various thresholds ***/
 // DBZ thresholds
 #define THRESH_DBZ_MAX_SIGNAL					75
 #define THRESH_DBZ_TSTORM						50
+#define THRESH_DBZ_PRE_TSTORM					45
 #define THRESH_DBZ_MODERATE_PRECIP				35
 #define THRESH_DBZ_LIGHT_PRECIP					20
 
@@ -36,9 +55,14 @@
 #define THRESH_RADAR_PX_SIGNAL					100
 #define THRESH_RADAR_PX_PRECIP_RAW				1000
 #define THRESH_RADAR_PX_PRECIP_STORM			200
-#define THRESH_RADAR_PX_STORM					25
+#define THRESH_RADAR_PX_STORM					10
 #define THRESH_RADAR_PX_NOSTORM					10			// Radar image defined as having "no storm" activity below this
 //#define THRESH_RADAR_PX_CELL					100
+
+/*#define THRESH_RADAR_PX_STORM					15
+#define THRESH_RADAR_PX_PRECIP					200
+#define THRESH_RADAR_PX_SIGNAL					100
+#define THRESH_RADAR_PX_PRECIP_STORM			200*/
 
 #define MAGIC									0xAD80
 #define VERSION									"2.0\0"
@@ -48,16 +72,17 @@
 #define RADAR_STATION							"DIX"
 #define RADAR_TYPE								"NCR"
 
-#define MAX_FILES								15000
+#define MAX_FILES								25000
 
 #define SKIP_EXISTING_RADAR						true
 #define FLAG_REMOVE_EMPTY_IMAGES				1
 
-#define SQLITE_DB_PATH							"."
+#define DATAFILE_PATH							"gnuplot"
+#define SQLITE_DB_PATH							"/dev/shm/radar"
 #define SQLITE_META_DB							"meta.db"
 #define SQLITE_IMAGE_DB							"radar.db"
-// #define SQLITE_META_DB						"/dev/shm/radar/meta.db"
-// #define SQLITE_IMAGE_DB						"/dev/shm/radar/radar.db"
+// #define SQLITE_META_DB							"/dev/shm/radar/meta.db"
+// #define SQLITE_IMAGE_DB							"/dev/shm/radar/radar.db"
 
 
 /*** General DBZ/index helper functions ***/
@@ -68,10 +93,11 @@
 #define DBZ_COLORLIST_STEP 						5
 #define DBZ_COLORLIST_LENGTH					16
 
-#define CheckListColor(i,r,g,b,list)	(r == list[i][RGB_R] && g == list[i][RGB_G] && b == list[i][RGB_B])
-#define Index2DBZFull(index)			((index * DBZ_COLORLIST_STEP) + DBZ_COLORLIST_MIN - 5)		// Index starts at null
-#define DBZFull2Index(dbz)				((dbz - DBZ_COLORLIST_MIN + 5) / DBZ_COLORLIST_STEP)
-
+#define CheckListColor(i,r,g,b,list)	( r == list[i][RGB_R] && g == list[i][RGB_G] && b == list[i][RGB_B] )
+#define Index2DBZFull(index)			( (index * DBZ_COLORLIST_STEP) + DBZ_COLORLIST_MIN - 5 )		// Index starts at null
+#define DBZFull2Index(dbz)				( (dbz - DBZ_COLORLIST_MIN + 5) / DBZ_COLORLIST_STEP )
+#define dbz2Power(dbz)					( pow(10, dbz/10) )
+#define dbz2Rainfall(dbz)				( pow(pow(10,dbz/10)/200, 0.625) )
 
 /*
 This is a highly performance-impacting data structure
@@ -116,8 +142,8 @@ We want these removed from our radar images **/
 // ANSI colors
 #define CLR_R					"\033[0;31m"
 #define CLR_Y					"\033[0;33m"
-#define CLR_G					"\033[1;32m"
-#define CLR_BG					"\033[0;32m"
+#define CLR_BG					"\033[1;32m"
+#define CLR_G					"\033[0;32m"
 #define CLR_GR					"\033[1;30m"
 #define CLR_W					"\033[0;37m"
 #define CLR_DEF					"\033[0m"
@@ -127,32 +153,46 @@ We want these removed from our radar images **/
 
 // typedef structs
 typedef struct {
+	int ret;
+	unsigned int id;
+} returnIdCode;
+
+typedef struct {
 	unsigned short x,y;
 } cartesianPair;
 
 typedef struct {
+	cartesianPair xy;
+	int dbz;
+} stormPixel;
+
+typedef struct {
     cartesianPair xy;
-    unsigned short id, size;
+    unsigned short id, size, dbzMax;
+	unsigned int dbzSigma;
+	float dbzAvg, dbzStdDev, xCenter, yCenter;
 } stormCell;
 
 typedef struct {
 	unsigned int id;
+	unsigned int flags;
+	unsigned int stormPixels, precipPixels;
 	tm time;
-} idTimeStruct;
+} idFlagsTimeStruct;
 
 
 template<typename T>
-class fixed_stack : public std::deque<T>
+class fixed_queue : public std::deque<T>
 {
 public:
-	fixed_stack(size_t ms) : std::deque<T>(), max_size(ms) {}
+	fixed_queue(size_t ms) : std::deque<T>(), max_size(ms) {}
 
-	void push_front(const T &v)
+	void push_fixed_back(const T &v)
 	{
 		if (std::deque<T>::size() == max_size)
-			std::deque<T>::pop_back();
+			std::deque<T>::pop_front();
 
-		std::deque<T>::push_front(v);
+		std::deque<T>::push_back(v);
 	}
 
 // 	template<typename Tt>
@@ -172,5 +212,6 @@ private:
 
 
 void signalHandler(int);
+void shutdownApplication(bool, int);
 
 #endif

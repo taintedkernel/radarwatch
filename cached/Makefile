@@ -1,7 +1,7 @@
 ## Makefile
 
 CC=g++
-CFLAGS=-Wfatal-errors -I/usr/include -O2 -g -pg
+CFLAGS=-I/usr/include -O1 -g
 DEBUGFLAGS=$(CFLAGS) -Q -ggdb -O0
 LIBS=-lXpm -lX11 -ljpeg -lfontconfig -lfreetype -lpng12 -lz -lm -lgd -lsqlite3
 

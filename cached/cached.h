@@ -11,17 +11,22 @@
 #define ERROR_SKIP_IMAGE						-1
 
 // flags
-#define FLAG_RADAR_NO_PRECIP					1
-#define FLAG_RADAR_NO_STORMS					2
-#define FLAG_RADAR_NO_DATA						4
-#define FLAG_RADAR_BLANK						8
-//#define FLAG_RADAR_NO_DATA						16
-//#define FLAG_RADAR_NO_DATA						32
-//#define FLAG_RADAR_NO_DATA						64
-#define FLAG_RADAR_KEEP_BEFORE					128
-#define FLAG_RADAR_KEEP_AFTER					256
-#define FLAG_RADAR_DELETE						512
+#define FLAG_RADAR_NO_PRECIP					1 << 0
+#define FLAG_RADAR_NO_STORMS					1 << 1
+#define FLAG_RADAR_NO_DATA						1 << 2
+#define FLAG_RADAR_BLANK						1 << 3
+//#define FLAG_RADAR_NO_DATA						1 << 4
+//#define FLAG_RADAR_NO_DATA						1 << 5
+//#define FLAG_RADAR_NO_DATA						1 << 6
+#define FLAG_RADAR_KEEP_BEFORE					1 << 7
+#define FLAG_RADAR_KEEP_AFTER					1 << 8
+#define FLAG_RADAR_DELETE						1 << 9
 
+
+#define OPT_QUERY_ABORTONERR					1 << 0
+#define OPT_QUERY_CONTONERR						1 << 1
+#define OPT_QUERY_IGNRETRY						1 << 2
+#define OPT_QUERY_IGNNOROWERR					1 << 3
 
 
 // enums
@@ -202,16 +207,102 @@ private:
 	size_t max_size;
 };
 
+
+
+
 // template<typename Tt>
 // std::ostream &operator<<(std::ostream & os, const fixed_stack<Tt> & fs)
-// {
-// 	for(typename fixed_stack<Tt>::const_iterator it = fs.begin(); it != fs.end(); ++it )
-// 	os << *it << " ";
+
+// 	for(typename fixed_stack<Tt>::const_iterator it = fs.begin(); it != fs.end(); ++it // 	os << *it << " ";
 // 	return os;
 // }
+
+typedef struct {
+	int rc;
+	int data;
+} st_clRadarDbRes;
+
+
+class cl_radarDB
+{
+private:
+	bool init;
+	sqlite3 *metaDB, *imageDB;
+
+	int RunQueryGeneric(sqlite3 *db, const char *query, bool onAbort);
+
+public:
+	sqlite3_stmt *celldataInsertStmt, *dbzdataInsertStmt;
+
+	cl_radarDB(void) { init = false ;}
+	~cl_radarDB(void) {
+		sqlite3_close(metaDB);
+		sqlite3_close(imageDB);
+	}
+
+	// Low-level query functions
+	// Eventually to be deprecated for a query API to abstract away the SQL
+	int openDBs(const char *metaDBname, const char *imageDBname);
+	unsigned int addRadarToDB(unsigned int id, const char *radarFilePath);
+	int RunQueryMeta(const char *query, bool onAbort = false);
+	//int RunQueryMeta(const char *query, bool onAbort);
+	//void GetQueryResultsMeta(char *query, st_clRadarDbRes &result, bool onAbort = false);
+	void GetQueryResultsMeta(char *query, st_clRadarDbRes &result, unsigned int option = OPT_QUERY_CONTONERR);
+	int RunQueryImage(const char *query, bool onAbort = false);
+
+	// Query API
+	int getRadarId(const char *filename, int options);
+};
+
+
+
+//class nexradImage
+
+//class nexradGif : public nexradImage
+class cl_nexradGif
+{
+private:
+	cl_radarDB *radarDB;
+	gdImagePtr radarGdImage;
+	char *radarFilename;
+
+public:
+	cl_nexradGif(void) { radarFilename = NULL; }
+	cl_nexradGif(cl_radarDB *db) {
+		radarFilename = NULL;
+		radarDB = db;
+	}
+	void setDB(cl_radarDB *db) { radarDB = db; }
+	void setFile(char *filename)
+	{ 
+		if (radarFilename != NULL) 
+			free(radarFilename);
+		radarFilename = (char *)malloc(strlen(filename));
+		memcpy(radarFilename,filename,strlen(filename)+1);
+	}
+	inline int GetFullPixelDBZIndex(unsigned int x, unsigned int y);
+	inline int GetFullPixelDBZIndex(cartesianPair xy);
+	void paintCell(stormCell &cell);
+	//int processImage(unsigned int &newId, const char *radarfile, sqlite3 *metaDB, bool skipExisting);
+	//int processImage(unsigned int &newId, const char *radarfile, bool skipExisting);
+	//int processImage(unsigned int &newId, const char *radarfile, bool skipExisting);
+	int processImage(unsigned int &newId, bool skipExisting);
+
+};
 
 
 void signalHandler(int);
 void shutdownApplication(bool, int);
+//int RunQuery(sqlite3 *db, const char *query, bool onAbort);
+//inline int GetFullPixelDBZIndex(unsigned int x, unsigned int y);
+//inline int GetFullPixelDBZIndex(cartesianPair xy);
+//void paintCell(stormCell &cell);
+//unsigned int addRadarToDB(unsigned int id, const char *radarFilePath, sqlite3 *db);
+//int analyzeGroups(bool sortOrder, unsigned int setFlag);
+//int groupStorms(void);
+//void analyzeDB(bool flagCompactDB, bool writeDataFiles);
+//int processImage(unsigned int &newId, const char *radarfile, sqlite3 *metaDB, bool skipExisting);
+
+
 
 #endif

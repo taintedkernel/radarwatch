@@ -78,6 +78,7 @@
 #define RADAR_TYPE								"NCR"
 
 #define MAX_FILES								25000
+#define NUM_PROCESS_WORKERS						2	
 
 #define SKIP_EXISTING_RADAR						true
 #define FLAG_REMOVE_EMPTY_IMAGES				1
@@ -156,6 +157,10 @@ We want these removed from our radar images **/
 
 // custom data types
 
+
+class cl_nexradGifProcessor;
+
+
 // typedef structs
 typedef struct {
 	int ret;
@@ -173,8 +178,9 @@ typedef struct {
 
 typedef struct {
     cartesianPair xy;
-    unsigned short id, size, dbzMax;
+    unsigned short id, size; //, dbzMax;
 	unsigned int dbzSigma;
+	stormPixel dbzMax;
 	float dbzAvg, dbzStdDev, xCenter, yCenter;
 } stormCell;
 
@@ -184,6 +190,11 @@ typedef struct {
 	unsigned int stormPixels, precipPixels;
 	tm time;
 } idFlagsTimeStruct;
+
+typedef struct {
+	void *zmqContext;
+	cl_nexradGifProcessor *cppClassContext;
+} pthreadFnArgs;
 
 
 template<typename T>
@@ -234,7 +245,9 @@ private:
 public:
 	sqlite3_stmt *celldataInsertStmt, *dbzdataInsertStmt;
 
-	cl_radarDB(void) { init = false ;}
+	cl_radarDB(void) { 
+		init = false;
+	}
 	~cl_radarDB(void) {
 		sqlite3_close(metaDB);
 		sqlite3_close(imageDB);
@@ -259,34 +272,64 @@ public:
 //class nexradImage
 
 //class nexradGif : public nexradImage
-class cl_nexradGif
+class cl_nexradGifProcessor
 {
 private:
 	cl_radarDB *radarDB;
 	gdImagePtr radarGdImage;
 	char *radarFilename;
+	void *receiver;
+	pthread_t thread;
+//	void *zmqContext;
 
 public:
-	cl_nexradGif(void) { radarFilename = NULL; }
-	cl_nexradGif(cl_radarDB *db) {
+	cl_nexradGifProcessor(void) {
 		radarFilename = NULL;
+	}
+	cl_nexradGifProcessor(cl_radarDB *db, void *zmqContext)
+	{
+		pthreadFnArgs *threadArgs = (pthreadFnArgs *)malloc(sizeof(pthreadFnArgs));
+ 		threadArgs->zmqContext = zmqContext;
+		threadArgs->cppClassContext = this;
+//		setContext(context);
+//		setDB(db);
 		radarDB = db;
+		radarFilename = NULL;
+		//pthread_create(&thread, NULL, (void *)(threadWorker), context);
+		//pthread_create(&thread, NULL, &cl_nexradGifProcessor::threadWorker, context);
+//		pthread_create(&thread, NULL, &cl_nexradGifProcessor::_threadWorker, (void *)(void*)threadArgs);
+	}
+	~cl_nexradGifProcessor(void)
+	{
+		// kill thread
+//		pthread_join(thread, NULL);
+	}
+
+	// Static thread wrapper function
+	static void* _threadWorker(pthreadFnArgs *context) {
+		context->cppClassContext->threadWorker((void *)context->zmqContext);
+		return NULL;
 	}
 	void setDB(cl_radarDB *db) { radarDB = db; }
+//	void setContext(void *context) {
+//		receiver = zmq_socket(context, ZMQ_REP);
+//	}
 	void setFile(char *filename)
 	{ 
 		if (radarFilename != NULL) 
 			free(radarFilename);
 		radarFilename = (char *)malloc(strlen(filename));
-		memcpy(radarFilename,filename,strlen(filename)+1);
+		memcpy(radarFilename,filename,strlen(filename));
 	}
+
 	inline int GetFullPixelDBZIndex(unsigned int x, unsigned int y);
 	inline int GetFullPixelDBZIndex(cartesianPair xy);
-	void paintCell(stormCell &cell);
+	void labelCell(stormCell &cell);
 	//int processImage(unsigned int &newId, const char *radarfile, sqlite3 *metaDB, bool skipExisting);
 	//int processImage(unsigned int &newId, const char *radarfile, bool skipExisting);
 	//int processImage(unsigned int &newId, const char *radarfile, bool skipExisting);
 	int processImage(unsigned int &newId, bool skipExisting);
+	void* threadWorker(void *threadZmqContext);
 
 };
 

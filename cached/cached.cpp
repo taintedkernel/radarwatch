@@ -28,7 +28,8 @@
 #include <pthread.h>
 #include <zmq.hpp>
 
-#include "zhelpers.hpp"
+//#include "zhelpers.hpp"
+#include "zhelpers.h"
 #include "cached.h"
 
 
@@ -117,7 +118,7 @@ int cl_radarDB::openDBs(const char *metaDBname, const char *imageDBname)
 			"dbzValue INTEGER, pixelCount INTEGER, UNIQUE(radarid, dbzValue))", true);
 	RunQueryMeta("CREATE TABLE IF NOT EXISTS celldata (cellid INTEGER, "
 			"radarid INTEGER, size INTEGER, dbzSigma INTEGER, dbzAvg FLOAT, dbzStdDev FLOAT, "
-			"dbzMax INTEGER, x INTEGER, y INTEGER, xCenter DOUBLE, yCenter DOUBLE, flags INTEGER, "
+			"dbzMax INTEGER, dbzMaxX INTEGER, dbzMaxY INTEGER, x INTEGER, y INTEGER, xCenter DOUBLE, yCenter DOUBLE, flags INTEGER, "
 			"UNIQUE (cellid, radarid))", true);
 	RunQueryMeta("CREATE TABLE IF NOT EXISTS radarmeta (radarid INTEGER, "
 			"datatype INTEGER, value INTEGER, UNIQUE (radarid, datatype))", true);
@@ -137,20 +138,22 @@ int cl_radarDB::openDBs(const char *metaDBname, const char *imageDBname)
 	RunQueryMeta("PRAGMA synchronous = OFF");
 	RunQueryMeta("PRAGMA journal_mode = MEMORY");
 
-	sqlite3_prepare_v2(metaDB, "INSERT OR REPLACE INTO celldata (cellid, radarid, size, dbzSigma, dbzAvg, dbzMax, dbzStdDev,"
-		"x, y, xCenter, yCenter) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &celldataInsertStmt, 0);
-	sqlite3_prepare_v2(metaDB, "INSERT OR REPLACE INTO dbzData (radarid, dbzValue, pixelCount) VALUES (?, ?, ?)", -1,
-		&dbzdataInsertStmt, 0);
+	if (!sqlite3_prepare_v2(metaDB, "INSERT OR REPLACE INTO celldata (cellid, radarid, size, dbzSigma, dbzAvg, dbzMax, dbzMaxX, dbzMaxY, dbzStdDev,x, y, xCenter, yCenter) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &celldataInsertStmt, 0))
+		printf("error initializing celldataInsertStmt\n");
+	if (!sqlite3_prepare_v2(metaDB, "INSERT OR REPLACE INTO dbzData (radarid, dbzValue, pixelCount) VALUES (?, ?, ?)", -1, &dbzdataInsertStmt, 0))
+		printf("error initializing dbzdataInsertStmt\n");
 
 	init = true;
 	return 0;
 }
 
-int cl_radarDB::RunQueryMeta(const char *query, bool onAbort = false) {
+//int cl_radarDB::RunQueryMeta(const char *query, bool onAbort = false) {
+int cl_radarDB::RunQueryMeta(const char *query, bool onAbort) {
 	return RunQueryGeneric(metaDB, query, onAbort);
 }
 
-int cl_radarDB::RunQueryImage(const char *query, bool onAbort = false) {
+//int cl_radarDB::RunQueryImage(const char *query, bool onAbort = false) {
+int cl_radarDB::RunQueryImage(const char *query, bool onAbort) {
 	return RunQueryGeneric(imageDB, query, onAbort);
 }
 
@@ -198,7 +201,8 @@ int cl_radarDB::RunQueryGeneric(sqlite3 *db, const char *query, bool onAbort)
 // 		1 - display errors, continue
 //		2 - display errors except non-row, continue
 
-void cl_radarDB::GetQueryResultsMeta(char *query, st_clRadarDbRes &result, unsigned int option = OPT_QUERY_CONTONERR)
+//void cl_radarDB::GetQueryResultsMeta(char *query, st_clRadarDbRes &result, unsigned int option = OPT_QUERY_CONTONERR)
+void cl_radarDB::GetQueryResultsMeta(char *query, st_clRadarDbRes &result, unsigned int option)
 {
 	int rc;
 	static sqlite3_stmt *ppStmt;
@@ -242,7 +246,7 @@ void cl_radarDB::GetQueryResultsMeta(char *query, st_clRadarDbRes &result, unsig
 int cl_radarDB::getRadarId(const char *filename, int options)
 {
 	static st_clRadarDbRes result;
-	static char *searchQuery = sqlite3_mprintf("SELECT id FROM radar WHERE fileName=%Q", filename);
+	char *searchQuery = sqlite3_mprintf("SELECT id FROM radar WHERE fileName=%Q", filename);
 /*	char *searchQuery = sqlite3_mprintf("SELECT id FROM radar WHERE station='%s'"
 			" AND timestamp='%s' AND type='%s'", station, timestamp, type);*/
 
@@ -252,164 +256,9 @@ int cl_radarDB::getRadarId(const char *filename, int options)
 	if (result.rc == SQLITE_OK)
 		return (int)result.data;
 	else
-		return -1;
+		return 0;
 }
 
-
-// Returns NEXRAD radar signal strength of a pixel coordinate (indexed palette color)
-inline int cl_nexradGif::GetFullPixelDBZIndex(unsigned int x, unsigned int y)
-{
-	register int red = radarGdImage->red[gdImageGetPixel(radarGdImage, x, y)];				// *SLOW*
-	register int green = radarGdImage->green[gdImageGetPixel(radarGdImage, x, y)];			// *SLOW*
-	register int blue = radarGdImage->blue[gdImageGetPixel(radarGdImage, x, y)];			// *SLOW*
-
-	for (register int i = 1; i <= sizeof(dbZFullColorList) / (3*sizeof(int)); i++)		// 3 = R,G,B  **SLOW**
-	{
-        if (CheckListColor(i, red, green, blue, dbZFullColorList)) {			// **SLOW**
-            return i;
-        }
-    }
-
-    return 0;
-}
-
-// Overloaded function with combined xy pair argument
-inline int cl_nexradGif::GetFullPixelDBZIndex(cartesianPair xy)
-{
-	register int red = radarGdImage->red[gdImageGetPixel(radarGdImage, xy.x, xy.y)];
-	register int green = radarGdImage->green[gdImageGetPixel(radarGdImage, xy.x, xy.y)];
-	register int blue = radarGdImage->blue[gdImageGetPixel(radarGdImage, xy.x, xy.y)];
-
-	for (register int i = 1; i <= sizeof(dbZFullColorList) / (3*sizeof(int)); i++) {    // 3 = R,G,B
-		if (CheckListColor(i, red, green, blue, dbZFullColorList))
-			return i;
-	}
-
-	return 0;
-}
-
-/*unsigned int classifyImage(unsigned int id)
-{
-	unsigned int flags = 0;
-
-	return flags;
-}*/
-
-/*if (stormCount < THRESH_RADAR_PX_STORM)
-	flags |= FLAG_RADAR_NO_STORMS;
-
-if (precipCount < THRESH_RADAR_PX_PRECIP_STORM)
-	flags |= FLAG_RADAR_NO_PRECIP;*/
-
-/*if (signalCount < THRESH_RADAR_
-		if (stormPxCount >= THRESH_RADAR_PX_STORM)					// 25
-		printf(CLR_R);
-	else if (precipPxCount >= THRESH_RADAR_PX_PRECIP_STORM)		// 200
-		printf(CLR_Y);
-	else if (signalPxCount >= THRESH_RADAR_PX_PRECIP_RAW)		// 1000
-		printf(CLR_BG);
-	else if (signalPxCount >= THRESH_RADAR_PX_SIGNAL)			// 100
-		printf(CLR_G);
-	else
-		printf(CLR_W);*/
-
-// unsigned int paintCell(cartesianPair point, unsigned int id)
-void cl_nexradGif::paintCell(stormCell &cell)
-{
-	unsigned int cellSize = 0, dbzIndex;
-	bool localDebug = false;
-	int dbzValue, dbzSum = 0, dbzMax = 0;
-	stack<stormPixel> cellComponents;
-	stormPixel cellPixel;
-	stack<cartesianPair> pixels;
-	cartesianPair point;
-	stack<int> stdDevStack;
-
-    // sin/cos first deravitive values circling a central pixel,
-	// radius 1, starting at 12 o'clock (90 degrees)
-    static int xShift[] = {  0,  1,  0,  0, -1, -1,  0,  0, };
-    static int yShift[] = { -1,  0,  1,  1,  0,  0, -1, -1, };
-
-    if (Index2DBZFull(GetFullPixelDBZIndex(cell.xy)) < THRESH_DBZ_PRE_TSTORM) return;
-
-    if (localDebug) printf("painting cell %d ... ", cell.id);
-    pixels.push(cell.xy);
-	//stdDevStack.push(Index2DBZFull(GetFullPixelDBZIndex(cell.xy)));
-
-    while (!pixels.empty())
-    {
-        point = pixels.top();
-        pixels.pop();
-
-		dbzIndex = GetFullPixelDBZIndex(point);
-		dbzValue = Index2DBZFull(dbzIndex);
-
-		if (localDebug) printf("(%d,%d,%d,%d)\n", point.x, point.y, dbzIndex, dbzValue);
-
-		if (dbzValue >= THRESH_DBZ_PRE_TSTORM)
-		{
-			cellSize++;
-			dbzSum += dbzValue;
-			cellPixel.xy = point;
-			cellPixel.dbz = dbzValue;
-			cellComponents.push(cellPixel);
-			stdDevStack.push(dbzValue);
-
-			if (dbzValue > dbzMax)
-				dbzMax = dbzValue;
-			if (cellIDMatrix[point.y][point.x] == 0)
-				cellIDMatrix[point.y][point.x] = cell.id;
-		}
-
-        // Take our xy point and check the surrounding 8 pixels
-        for (int i = 0; i <= 7; i++)
-        {
-            point.x += xShift[i];
-            point.y += yShift[i];
-
-            if (point.x < 0 || point.y < 0 || point.x >= gdImageSX(radarGdImage) || point.y >= gdImageSY(radarGdImage))
-                continue;
-
-            if (dbzValue >= THRESH_DBZ_PRE_TSTORM && cellIDMatrix[point.y][point.x] == 0) {
-                cellIDMatrix[point.y][point.x] = cell.id;
-                pixels.push(point);
-            }
-			if (localDebug) printf(".");
-        }
-    }
-
-	cell.size = cellSize;
-	cell.dbzSigma = dbzSum;
-	cell.dbzAvg = dbzSum / cellSize;
-	cell.dbzMax = dbzMax;
-	cell.dbzStdDev = 0.0;
-
-	if (cellSize > 1)
-	{
-		float totalDev = 0;
-		while (!stdDevStack.empty()) {
-			//thisDev = stdDevStack.top() - cell.dbzAvg;
-			totalDev += pow(stdDevStack.top() - cell.dbzAvg, 2);
-			stdDevStack.pop();
-		}
-		//totalDev = sqrt(totalDev/(cellSize - 1));
-		cell.dbzStdDev = sqrt(totalDev/(cellSize - 1));
-	}
-
-	float powXWeightSum = 0, powYWeightSum = 0, powerSum = 0;
-	while (!cellComponents.empty()) {
-		cellPixel =  cellComponents.top();
-		cellComponents.pop();
-		powXWeightSum += cellPixel.xy.x * dbz2Power(cellPixel.dbz);
-		powYWeightSum += cellPixel.xy.y * dbz2Power(cellPixel.dbz);
-		powerSum += dbz2Power(cellPixel.dbz);
-	}
-
-	cell.xCenter = powXWeightSum / powerSum;
-	cell.yCenter = powYWeightSum / powerSum;
-
-	if (localDebug) printf("\n");
-}
 
 //unsigned int cl_radarDB::addRadarToDB(unsigned int id, const char *radarFilePath, sqlite3 *db)
 unsigned int cl_radarDB::addRadarToDB(unsigned int id, const char *radarFilePath)
@@ -473,6 +322,165 @@ unsigned int cl_radarDB::addRadarToDB(unsigned int id, const char *radarFilePath
 
 	return 1;
 }
+
+
+
+// Returns NEXRAD radar signal strength of a pixel coordinate (indexed palette color)
+inline int cl_nexradGifProcessor::GetFullPixelDBZIndex(unsigned int x, unsigned int y)
+{
+	register int red = radarGdImage->red[gdImageGetPixel(radarGdImage, x, y)];				// *SLOW*
+	register int green = radarGdImage->green[gdImageGetPixel(radarGdImage, x, y)];			// *SLOW*
+	register int blue = radarGdImage->blue[gdImageGetPixel(radarGdImage, x, y)];			// *SLOW*
+
+	for (register int i = 1; i <= sizeof(dbZFullColorList) / (3*sizeof(int)); i++)		// 3 = R,G,B  **SLOW**
+	{
+        if (CheckListColor(i, red, green, blue, dbZFullColorList)) {			// **SLOW**
+            return i;
+        }
+    }
+
+    return 0;
+}
+
+// Overloaded function with combined xy pair argument
+inline int cl_nexradGifProcessor::GetFullPixelDBZIndex(cartesianPair xy)
+{
+	register int red = radarGdImage->red[gdImageGetPixel(radarGdImage, xy.x, xy.y)];
+	register int green = radarGdImage->green[gdImageGetPixel(radarGdImage, xy.x, xy.y)];
+	register int blue = radarGdImage->blue[gdImageGetPixel(radarGdImage, xy.x, xy.y)];
+
+	for (register int i = 1; i <= sizeof(dbZFullColorList) / (3*sizeof(int)); i++) {    // 3 = R,G,B
+		if (CheckListColor(i, red, green, blue, dbZFullColorList))
+			return i;
+	}
+
+	return 0;
+}
+
+/*unsigned int classifyImage(unsigned int id)
+{
+	unsigned int flags = 0;
+
+	return flags;
+}*/
+
+/*if (stormCount < THRESH_RADAR_PX_STORM)
+	flags |= FLAG_RADAR_NO_STORMS;
+
+if (precipCount < THRESH_RADAR_PX_PRECIP_STORM)
+	flags |= FLAG_RADAR_NO_PRECIP;*/
+
+/*if (signalCount < THRESH_RADAR_
+		if (stormPxCount >= THRESH_RADAR_PX_STORM)					// 25
+		printf(CLR_R);
+	else if (precipPxCount >= THRESH_RADAR_PX_PRECIP_STORM)		// 200
+		printf(CLR_Y);
+	else if (signalPxCount >= THRESH_RADAR_PX_PRECIP_RAW)		// 1000
+		printf(CLR_BG);
+	else if (signalPxCount >= THRESH_RADAR_PX_SIGNAL)			// 100
+		printf(CLR_G);
+	else
+		printf(CLR_W);*/
+
+// unsigned int paintCell(cartesianPair point, unsigned int id)
+void cl_nexradGifProcessor::labelCell(stormCell &cell)
+{
+	unsigned int cellSize = 0, dbzIndex;
+	bool localDebug = false;
+	int dbzValue, dbzSum = 0;
+	stack<stormPixel> cellComponents;
+	stormPixel cellPixel, dbzMax;
+	stack<cartesianPair> pixels;
+	cartesianPair point;
+	stack<int> stdDevStack;
+
+    // sin/cos first deravitive values circling a central pixel,
+	// radius 1, starting at 12 o'clock (90 degrees)
+    static int xShift[] = {  0,  1,  0,  0, -1, -1,  0,  0, };
+    static int yShift[] = { -1,  0,  1,  1,  0,  0, -1, -1, };
+
+    if (Index2DBZFull(GetFullPixelDBZIndex(cell.xy)) < THRESH_DBZ_PRE_TSTORM) return;
+
+    if (localDebug) printf("painting cell %d ... ", cell.id);
+    pixels.push(cell.xy);
+	//stdDevStack.push(Index2DBZFull(GetFullPixelDBZIndex(cell.xy)));
+
+    while (!pixels.empty())
+    {
+        point = pixels.top();
+        pixels.pop();
+
+		dbzIndex = GetFullPixelDBZIndex(point);
+		dbzValue = Index2DBZFull(dbzIndex);
+
+		if (localDebug) printf("(%d,%d,%d,%d)\n", point.x, point.y, dbzIndex, dbzValue);
+
+		if (dbzValue >= THRESH_DBZ_PRE_TSTORM)
+		{
+			cellSize++;
+			dbzSum += dbzValue;
+			cellPixel.xy = point;
+			cellPixel.dbz = dbzValue;
+			cellComponents.push(cellPixel);
+			stdDevStack.push(dbzValue);
+
+			if (dbzValue > dbzMax.dbz) {
+				dbzMax.xy = point;
+				dbzMax.dbz = dbzValue;
+			}
+			if (cellIDMatrix[point.y][point.x] == 0)
+				cellIDMatrix[point.y][point.x] = cell.id;
+		}
+
+        // Take our xy point and check the surrounding 8 pixels
+        for (int i = 0; i <= 7; i++)
+        {
+            point.x += xShift[i];
+            point.y += yShift[i];
+
+            if (point.x < 0 || point.y < 0 || point.x >= gdImageSX(radarGdImage) || point.y >= gdImageSY(radarGdImage))
+                continue;
+
+			// TODO: Use heuristic here rather then hard cutoff
+            if (dbzValue >= THRESH_DBZ_PRE_TSTORM && cellIDMatrix[point.y][point.x] == 0) {
+                cellIDMatrix[point.y][point.x] = cell.id;
+                pixels.push(point);
+            }
+			if (localDebug) printf(".");
+        }
+    }
+
+	cell.size = cellSize;
+	cell.dbzSigma = dbzSum;
+	cell.dbzAvg = (float)dbzSum / cellSize;
+	cell.dbzMax = dbzMax;
+	cell.dbzStdDev = 0.0;
+
+	if (cellSize > 1)
+	{
+		float totalDev = 0;
+		while (!stdDevStack.empty()) {
+			totalDev += pow(stdDevStack.top() - cell.dbzAvg, 2);
+			stdDevStack.pop();
+		}
+		cell.dbzStdDev = sqrt(totalDev/(cellSize - 1));
+	}
+
+	float powXWeightSum = 0, powYWeightSum = 0, powerSum = 0;
+	while (!cellComponents.empty()) {
+		cellPixel =  cellComponents.top();
+		cellComponents.pop();
+		powXWeightSum += cellPixel.xy.x * dbz2Power(cellPixel.dbz);
+		powYWeightSum += cellPixel.xy.y * dbz2Power(cellPixel.dbz);
+		powerSum += dbz2Power(cellPixel.dbz);
+	}
+
+	cell.xCenter = powXWeightSum / powerSum;
+	cell.yCenter = powYWeightSum / powerSum;
+
+	if (localDebug) printf("\n");
+}
+
 
 
 
@@ -1335,8 +1343,8 @@ unsigned int cl_radarDB::addRadarToDB(unsigned int id, const char *radarFilePath
 
 
 //int processImage(unsigned int &newId, const char *radarfile, sqlite3 *metaDB, bool skipExisting)
-//int cl_nexradGif::processImage(unsigned int &newId, const char *radarfile, bool skipExisting)
-int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
+//int cl_nexradGifProcessor::processImage(unsigned int &newId, const char *radarfile, bool skipExisting)
+int cl_nexradGifProcessor::processImage(unsigned int &newId, bool skipExisting)
 {
 	// basic data types
 	register unsigned int x, y;
@@ -1346,6 +1354,8 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 	register int pixelGDIndex;
 	int pixelIndex, pixelDBZ, pixelFullDBZ, pixelFullIndex;			// Negative DBZ values are permitted!
 	int pixelR, pixelG, pixelB, pixelA;
+	float thisAvgDbz;
+	float avgSize, avgSigma, avgAvg, avgMax, avgStdDev;
 	float xCenter, yCenter;
 
     // stl
@@ -1357,7 +1367,7 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 
     // radarwatch structs
 	cartesianPair xy, xySum;
-	stormCell cell, avgCell, maxCell;
+	stormCell cell, max;
 
 	// storage: sqlite/files
 	FILE *radarFile;
@@ -1367,6 +1377,7 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 	int rc, radarId = 0;
 	st_clRadarDbRes result;
 
+	//dbzMaxSignal = 0;
 
 
 	// /path/to/radar/DIX_20090612_0208_NCR.gif
@@ -1385,37 +1396,20 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 	type[3] = '\0';
 
 
-	float thisAvgDbz, avgSize = 0, avgSigma = 0;
-	int dbzMaxSignal = 0;
-
 	// Search our radar table for an existing match
 	// TODO: move to Python code (make this C code dumb and migrate error-checking elsewhere?)
-/*	char *searchQuery = sqlite3_mprintf("SELECT id FROM radar WHERE station='%s'"
-			" AND timestamp='%s' AND type='%s'", station, timestamp, type);*/
-/*	char *searchQuery = sqlite3_mprintf("SELECT id FROM radar WHERE fileName=%Q", radarFileName);
+	radarId = radarDB->getRadarId(radarFileName, OPT_QUERY_IGNNOROWERR); 
 
+/*	char *searchQuery = sqlite3_mprintf("SELECT id FROM radar WHERE station='%s' AND timestamp='%s' AND type='%s'", station, timestamp, type);
+	char *searchQuery = sqlite3_mprintf("SELECT id FROM radar WHERE fileName=%Q", radarFileName);
 	radarDB->GetQueryResultsMeta(searchQuery, result, OPT_QUERY_IGNNOROWERR);
 	if (result.rc == SQLITE_OK) radarId = (int)result.data;
 	sqlite3_free(searchQuery);*/
-	radarId = radarDB->getRadarId(radarFileName, OPT_QUERY_IGNNOROWERR); 
 
-/*	rc = sqlite3_prepare_v2(metaDB, searchQuery, -1, &ppStmt, 0);
-
-	if (rc == SQLITE_OK && ppStmt != NULL)
-	{
-		rc = sqlite3_step(ppStmt);
-		if (rc == SQLITE_ROW)
-		{
-			radarId = sqlite3_column_int(ppStmt, 0);
-			rc = sqlite3_finalize(ppStmt);*/
-
-			if (radarId > 0 && skipExisting)
-			{
-				printf("Radar image %s exists in meta db (id: %d) and flag set, skipping\n", radarFileName, radarId);
-				return ERROR_SKIP_IMAGE;
-			}
-/*		}
-	}*/
+	if (radarId > 0 && skipExisting) {
+		printf("Radar image %s exists in meta db (id: %d) and flag set, skipping\n", radarFileName, radarId);
+		return ERROR_SKIP_IMAGE;
+	}
 
 	radarFile = fopen(radarFilename, "rb");
 	if (!radarFile) {
@@ -1430,11 +1424,10 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 		fclose(radarFile);
 		return ERROR_NON_GIF;
 	}
+	//printf("radar opened OK\n");
 
 	stormCellCount = stormPixelCount = precipPixelCount = signalPixelCount = 0;
 	memset(dbzPixelCount, 0, sizeof(unsigned int) * DBZ_COLORLIST_LENGTH);
-	memset(&avgCell, 0, sizeof(stormCell));
-	memset(&maxCell, 0, sizeof(stormCell));
 	xMax = gdImageSX(radarGdImage);
     yMax = gdImageSY(radarGdImage);
 
@@ -1511,7 +1504,6 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 			if (debug)
                 printf("%d/%d (%d,%d,%d,%d)\n", pixelFullIndex, pixelFullDBZ, pixelR, pixelG, pixelB, pixelA);
 
-
 			// Remove weak signals / noise from radar image
 			// This is kind of useless as we don't write the image back out
 			// It would be nice to write this updated image to db directly bypassing writing to disk
@@ -1525,8 +1517,7 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 				signalPixelCount++;
 			if (pixelFullDBZ >= THRESH_DBZ_MODERATE_PRECIP)
 				precipPixelCount++;
-            if (pixelFullDBZ >= THRESH_DBZ_TSTORM)
-			{
+            if (pixelFullDBZ >= THRESH_DBZ_TSTORM) {
                 stormPixelCount++;
                 xy.x = x;			xy.y = y;
                 xySum.x += x;		xySum.y += y;
@@ -1575,7 +1566,7 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
  		return 0;*/
 	}
 
-	printf("\nradar information: (%d signal, %d precip, %d storm, %d flags)\n",
+	printf("\nimage analysis : signal/precip/storm/flags = %d / %d / %d / %d\n",
 		   signalPixelCount, precipPixelCount, stormPixelCount, flags);
 
 
@@ -1585,15 +1576,14 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
     for (pixelIterator = pixelList.begin(); stormPixelCount > 0, pixelIterator != pixelList.end(); pixelIterator++)
     {
         xy = *pixelIterator;
-        x = xy.x; 		  y = xy.y;
+        x = xy.x;	  y = xy.y;
 		/*printf("P %X...", *pixelIterator);
 		printf("C (%d,%d)...", x, y);*/
 
-        if (cellIDMatrix[y][x] == 0)
-        {
+        if (cellIDMatrix[y][x] == 0) {
             cell.id = ++stormCellCount;
 			cell.xy = xy;
-            paintCell(cell);
+            labelCell(cell);
             cellList.push_back(cell);
         }
     }
@@ -1619,30 +1609,25 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 		printf("updating radar id %d entry with latest\n", radarId);
 
 		// We found existing entry, update it
-	// 			radarId = sqlite3_column_int(ppStmt, 0);
-	// 			rc = sqlite3_finalize(ppStmt);
+		// radarId = sqlite3_column_int(ppStmt, 0);
+		// rc = sqlite3_finalize(ppStmt);
 
-		char *updateQuery = sqlite3_mprintf("UPDATE radar SET station=%Q, timestamp=%Q, type=%Q, "
-			"fileName=%Q, flags=%d, signalPxCount=%d, precipPxCount=%d, stormPxCount=%d, cellCount=%d "
-			"WHERE id = %d", station, timestamp, type, radarFileName, flags, signalPixelCount, precipPixelCount,
-			stormPixelCount, stormCellCount, radarId);
+		char *updateQuery = sqlite3_mprintf("UPDATE radar SET station=%Q, timestamp=%Q, type=%Q, fileName=%Q, flags=%d, signalPxCount=%d, precipPxCount=%d, stormPxCount=%d, cellCount=%d WHERE id = %d", station, timestamp, type, radarFileName, flags, signalPixelCount, precipPixelCount, stormPixelCount, stormCellCount, radarId);
 		rc = radarDB->RunQueryMeta(updateQuery);
-	//			radarDB->GetMetaQueryResults(updateQuery, &result);
+		// radarDB->GetMetaQueryResults(updateQuery, &result);
 		sqlite3_free(updateQuery);
 
-	// 			char *dbzClearQuery = sqlite3_mprintf("DELETE FROM dbzData WHERE radarid=%d", radarId);
-	// 			rc = radarDB->RunQueryMeta(dbzClearQuery);
-	// 			sqlite3_free(dbzClearQuery);
+		// char *dbzClearQuery = sqlite3_mprintf("DELETE FROM dbzData WHERE radarid=%d", radarId);
+		// rc = radarDB->RunQueryMeta(dbzClearQuery);
+		// sqlite3_free(dbzClearQuery);
 	}
 	else
 	{
 		printf("inserting new radar entry\n");
-
-	// 			rc = sqlite3_finalize(ppStmt);
+		// rc = sqlite3_finalize(ppStmt);
 
 		// No entry found, insert new
-		char *insertQuery = sqlite3_mprintf("INSERT INTO radar (station, timestamp, type, fileName,"
-			" flags, signalPxCount, precipPxCount, stormPxCount, cellCount) VALUES (%Q, %Q, %Q, %Q, %d, %d, %d, %d, %d)",
+		char *insertQuery = sqlite3_mprintf("INSERT INTO radar (station, timestamp, type, fileName, flags, signalPxCount, precipPxCount, stormPxCount, cellCount) VALUES (%Q, %Q, %Q, %Q, %d, %d, %d, %d, %d)",
 			station, timestamp, type, radarFileName, flags, signalPixelCount, precipPixelCount, stormPixelCount, stormCellCount);
 		rc = radarDB->RunQueryMeta(insertQuery);
 		if (rc != SQLITE_OK) {
@@ -1655,17 +1640,17 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 		char *selectNewQuery = sqlite3_mprintf("SELECT id FROM radar WHERE station='%s'"
 					" AND timestamp='%s' AND type='%s'", station, timestamp, type);
 		radarDB->GetQueryResultsMeta(selectNewQuery, result);
-		if (result.rc != SQLITE_OK) {
-				radarId = 0;
-				fprintf(stderr, "SQL error: on SELECT (%s) new inserted data sqlite3_step returned %d\n", selectNewQuery, rc);
+		if (result.rc != SQLITE_OK)
+		{
+			radarId = 0;
+			fprintf(stderr, "SQL error: on SELECT (%s) new inserted data sqlite3_step returned %d\n", selectNewQuery, rc);
 		}
 		else
 			radarId = (int)result.data;
 
 		sqlite3_free(selectNewQuery);
 
-	/*			rc = sqlite3_prepare_v2(metaDB, selectNewQuery, -1, &ppStmt, 0);
-
+		/* rc = sqlite3_prepare_v2(metaDB, selectNewQuery, -1, &ppStmt, 0);
 		if (rc == SQLITE_OK && ppStmt != NULL)
 		{
 			rc = sqlite3_step(ppStmt);
@@ -1687,13 +1672,14 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 		}*/
 
 	}
+
 // 	}
 // 	else {
 // 		fprintf(stderr, "SQL error, on SELECT (%s) search sqlite_prepare returned %d. ppStmt=0x%p\n", selectQuery, rc, ppStmt);
 // 		sqlite3_finalize(ppStmt);
 // 	}
-
 //	sqlite3_free(selectQuery);
+
 	newId = radarId;
 	end = clock();
 	radarClock += (end - start);
@@ -1708,23 +1694,17 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 
 
 	/** Update/insert DBZ data for radar image **/
-	printf("inserting DBZ data: ");
+	printf("detailed DBZ data: ");
 
 	start = clock();
 	radarDB->RunQueryMeta("BEGIN");
-	// 	sqlite3_prepare_v2(metaDB, "INSERT INTO dbzData (radarid, dbzValue, pixelCount) VALUES (?, ?, ?)", -1, &ppStmt2, 0);
 
 	// Loop through DBZ data and add to db
 	for (int i=1; i<DBZ_COLORLIST_LENGTH, Index2DBZFull(i)<=THRESH_DBZ_MAX_SIGNAL; i++)
 	{
 		printf("%d=%d ", Index2DBZFull(i), dbzPixelCount[i]);
 
-		// Use prepared statement instead
-		/*char *dbzQuery = sqlite3_mprintf("INSERT INTO dbzData (radarid, dbzValue, pixelCount) VALUES (%d, %d, %d)",
-			radarId, Index2DBZFull(i), dbzPixelCount[i]);*/
-		/*rc = radarDB->RunQueryMeta(dbzQuery);
-		sqlite3_free(dbzQuery);*/
-
+		// Use prepared statement
 		sqlite3_bind_int(radarDB->dbzdataInsertStmt, 1, radarId);
 		sqlite3_bind_int(radarDB->dbzdataInsertStmt, 2, Index2DBZFull(i));
 		sqlite3_bind_int(radarDB->dbzdataInsertStmt, 3, dbzPixelCount[i]);
@@ -1746,10 +1726,14 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 	start = clock();
 	radarDB->RunQueryMeta("BEGIN");
 
-//	We're doing INSERT OR REPLACE so no need for expensive DELETE query
-// 	char *deleteQuery = sqlite3_mprintf("DELETE FROM celldata WHERE radarid=%d", radarId);
-// 	rc = radarDB->RunQuery(metaDB, deleteQuery);
-// 	sqlite3_free(deleteQuery);
+	// We're doing INSERT OR REPLACE so no need for expensive DELETE query
+	// char *deleteQuery = sqlite3_mprintf("DELETE FROM celldata WHERE radarid=%d", radarId);
+	// rc = radarDB->RunQuery(metaDB, deleteQuery);
+	// sqlite3_free(deleteQuery);
+
+	memset(&max, 0, sizeof(stormCell));
+	avgSize = avgSigma = avgAvg = avgMax = avgStdDev = 0;
+	//maxSize = maxSigma = maxAvg = maxMax = maxStdDev = 0;
 
 	// Loop through our cell list and insert into the db
 	for (cellIterator = cellList.begin(); cellIterator != cellList.end(); cellIterator++)
@@ -1757,45 +1741,53 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 		cell = *cellIterator;
 		xy = cell.xy;
 
-		avgSize += cell.size;
-		avgSigma += cell.dbzSigma;
+		avgSize 	+= cell.size;
+		avgSigma 	+= cell.dbzSigma;
+		avgAvg 		+= cell.dbzAvg;
+		avgMax		+= cell.dbzMax.dbz;
+		avgStdDev 	+= cell.dbzStdDev;
 
-		if (cell.size > maxCell.size) maxCell.size = cell.size;
-		if (cell.dbzSigma > maxCell.dbzSigma) maxCell.dbzSigma = cell.dbzSigma;
-		if (cell.dbzMax > dbzMaxSignal) dbzMaxSignal = cell.dbzMax;
+		// TODO: clean up this analysis, looks to be duplicated calculations
+		if (cell.size > max.size) 				max.size = cell.size;
+		if (cell.dbzSigma > max.dbzSigma) 		max.dbzSigma = cell.dbzSigma;
+		if (cell.dbzMax.dbz > max.dbzMax.dbz) 	max.dbzMax = cell.dbzMax;
+		if (cell.dbzAvg > max.dbzAvg) 			max.dbzAvg = cell.dbzAvg;
+		if (cell.dbzStdDev > max.dbzStdDev)		max.dbzStdDev = cell.dbzStdDev;
 
-//		We're using prepared statements now instead
-// 		char *cellInsertQuery = sqlite3_mprintf("INSERT INTO celldata (cellid, radarid, size, dbzSigma, "
-// 			" dbzAvg, dbzMax, dbzStdDev, x, y, xCenter, yCenter) VALUES (%d, %d, %d, %d, %f, %d, %f, %d, %d, %f, %f)",
-// 			cell.id, id, cell.size,	cell.dbzSigma, cell.dbzAvg, cell.dbzMax, cell.dbzStdDev, xy.x, xy.y, cell.xCenter,
-// 			cell.yCenter);
-// 		rc = radarDB->RunQueryMeta(cellInsertQuery);
-// 		sqlite3_free(cellInsertQuery);
+		//if (cell.size > maxSize)		maxSize = cell.size;
+		//if (cell.dbzSigma > maxSigma) 	maxSigma = cell.dbzSigma;
+		//if (cell.dbzAvg > maxAvg) 		maxAvg = cell.dbzAvg;
+		//if (cell.dbzMax > maxMax) 		maxMax = cell.dbzMax;
+		//if (cell.dbzStdDev > maxStdDev)	maxStdDev = cell.dbzStdDev;
 
+		sqlite3_bind_int(		radarDB->celldataInsertStmt, 1, cell.id);
+		sqlite3_bind_int(		radarDB->celldataInsertStmt, 2, radarId);
+		sqlite3_bind_int(		radarDB->celldataInsertStmt, 3, cell.size);
+		sqlite3_bind_int(		radarDB->celldataInsertStmt, 4, cell.dbzSigma);
+		sqlite3_bind_double(	radarDB->celldataInsertStmt, 5, cell.dbzAvg);
+		sqlite3_bind_int(		radarDB->celldataInsertStmt, 6, cell.dbzMax.dbz);
+		sqlite3_bind_int(		radarDB->celldataInsertStmt, 7, cell.dbzMax.xy.x);
+		sqlite3_bind_int(		radarDB->celldataInsertStmt, 8, cell.dbzMax.xy.y);
+		sqlite3_bind_double(	radarDB->celldataInsertStmt, 9, cell.dbzStdDev);
+		sqlite3_bind_int(		radarDB->celldataInsertStmt, 10, xy.x);
+		sqlite3_bind_int(		radarDB->celldataInsertStmt, 11, xy.y);
+		sqlite3_bind_double(	radarDB->celldataInsertStmt, 12, cell.xCenter);
+		sqlite3_bind_double(	radarDB->celldataInsertStmt, 13, cell.yCenter);
+		sqlite3_step(			radarDB->celldataInsertStmt);
+		sqlite3_clear_bindings(	radarDB->celldataInsertStmt);
+		sqlite3_reset(			radarDB->celldataInsertStmt);
 
-		printf("cell ID %2d @ (%3d,%3d) (%6.2f,%6.2f), size/sigma/avg/max/stddev = %4d / %6d / %5.3f / %2d / %5.3f\n",
-				cell.id, xy.x, xy.y, cell.xCenter, cell.yCenter, cell.size, cell.dbzSigma, cell.dbzAvg, cell.dbzMax,
-				cell.dbzStdDev);
-		sqlite3_bind_int(radarDB->celldataInsertStmt, 1, cell.id);
-		sqlite3_bind_int(radarDB->celldataInsertStmt, 2, radarId);
-		sqlite3_bind_int(radarDB->celldataInsertStmt, 3, cell.size);
-		sqlite3_bind_int(radarDB->celldataInsertStmt, 4, cell.dbzSigma);
-		sqlite3_bind_double(radarDB->celldataInsertStmt, 5, cell.dbzAvg);
-		sqlite3_bind_int(radarDB->celldataInsertStmt, 6, cell.dbzMax);
-		sqlite3_bind_double(radarDB->celldataInsertStmt, 7, cell.dbzStdDev);
-		sqlite3_bind_int(radarDB->celldataInsertStmt, 8, xy.x);
-		sqlite3_bind_int(radarDB->celldataInsertStmt, 9, xy.y);
-		sqlite3_bind_double(radarDB->celldataInsertStmt, 10, cell.xCenter);
-		sqlite3_bind_double(radarDB->celldataInsertStmt, 11, cell.yCenter);
-		sqlite3_step(radarDB->celldataInsertStmt);
-		sqlite3_clear_bindings(radarDB->celldataInsertStmt);
-		sqlite3_reset(radarDB->celldataInsertStmt);
+		printf("cell ID %2d @ (%3d,%3d) (%6.2f,%6.2f), size/sigma/max/avg/stddev = %4d / %6d / %4d / %5.3f / %5.3f\n", cell.id, xy.x, xy.y, cell.xCenter, cell.yCenter, cell.size, cell.dbzSigma, cell.dbzMax.dbz, cell.dbzAvg, cell.dbzStdDev);
 	}
 
 	radarDB->RunQueryMeta("COMMIT");
 
-	avgSize /= stormCellCount;
-	avgSigma /= stormCellCount;
+	avgSize 	/= stormCellCount;
+	avgSigma 	/= stormCellCount;
+	avgAvg 		/= stormCellCount;
+	avgMax		/= stormCellCount;
+	avgStdDev 	/= stormCellCount;
+
 	end = clock();
 	cellClock += (end - start);
 
@@ -1803,16 +1795,11 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 	/** Update/populate radar metadata **/
 	// TODO: Can probably be combined into one query
 	start = clock();
-	char *metaQuery1 = sqlite3_mprintf("INSERT OR REPLACE INTO radarmeta (radarid, datatype, value) VALUES (%d, %d, %d)",
-		id, DATA_AVG_CELL_SIZE, (int)avgSize);
-	char *metaQuery2 = sqlite3_mprintf("INSERT OR REPLACE INTO radarmeta (radarid, datatype, value) VALUES (%d, %d, %d)",
-		id, DATA_AVG_CELL_SIGMA, (int)avgSigma);
-	char *metaQuery3 = sqlite3_mprintf("INSERT OR REPLACE INTO radarmeta (radarid, datatype, value) VALUES (%d, %d, %d)",
-		id, DATA_MAX_CELL_SIZE, maxCell.size);
-	char *metaQuery4 = sqlite3_mprintf("INSERT OR REPLACE INTO radarmeta (radarid, datatype, value) VALUES (%d, %d, %d)",
-		id, DATA_MAX_CELL_SIGMA, maxCell.dbzSigma);
-	char *metaQuery5 = sqlite3_mprintf("INSERT OR REPLACE INTO radarmeta (radarid, datatype, value) VALUES (%d, %d, %d)",
-		id, DATA_MAX_DBZ_VALUE, dbzMaxSignal);
+	char *metaQuery1 = sqlite3_mprintf("INSERT OR REPLACE INTO radarmeta (radarid, datatype, value) VALUES (%d, %d, %d)", radarId, DATA_AVG_CELL_SIZE, (int)avgSize);
+	char *metaQuery2 = sqlite3_mprintf("INSERT OR REPLACE INTO radarmeta (radarid, datatype, value) VALUES (%d, %d, %d)", radarId, DATA_AVG_CELL_SIGMA, (int)avgSigma);
+	char *metaQuery3 = sqlite3_mprintf("INSERT OR REPLACE INTO radarmeta (radarid, datatype, value) VALUES (%d, %d, %d)", radarId, DATA_MAX_CELL_SIZE, max.size);
+	char *metaQuery4 = sqlite3_mprintf("INSERT OR REPLACE INTO radarmeta (radarid, datatype, value) VALUES (%d, %d, %d)", radarId, DATA_MAX_CELL_SIGMA, max.dbzSigma);
+	char *metaQuery5 = sqlite3_mprintf("INSERT OR REPLACE INTO radarmeta (radarid, datatype, value) VALUES (%d, %d, %d)", radarId, DATA_MAX_DBZ_VALUE, max.dbzMax);
 
 	radarDB->RunQueryMeta("BEGIN");
 	rc = radarDB->RunQueryMeta(metaQuery1);
@@ -1839,14 +1826,142 @@ int cl_nexradGif::processImage(unsigned int &newId, bool skipExisting)
 
 
 	/** Display results **/
-	printf("\nsignal count: %d\nprecip count: %d\nstorm pixel count: %d\nstorm cell count: %d\n",
-			signalPixelCount, precipPixelCount, stormPixelCount, stormCellCount);
-	printf("avg cell size/sigma: %.2f / %.2f\nmax cell size/sigma: %d / %d\n", avgSize, avgSigma,
-		maxCell.size, maxCell.dbzSigma);
-
+	//printf("\nsignal count: %d\nprecip count: %d\nstorm pixel count: %d\nstorm cell count: %d\n",
+	//		signalPixelCount, precipPixelCount, stormPixelCount, stormCellCount);
+	printf("                                                              max = %4d / %6d / %4d / %5.3f / %5.3f\n", max.size, max.dbzSigma, max.dbzMax.dbz, max.dbzAvg, max.dbzStdDev);
+	printf("                                                          average = %4.1f / %6.1f / %4.1f / %5.3f / %5.3f\n", avgSize, avgSigma, avgMax, avgAvg, avgStdDev);
+	//printf("\nmax cell size/sigma: %d / %d", max.size, max.dbzSigma);
+	//printf("\navg cell size/sigma: %.2f / %.2f", avgSize, avgSigma);
+	printf("\n");
 
 	return stormCellCount;
 }
+
+
+// thread handle worker request process
+void* cl_nexradGifProcessor::threadWorker(void *zmqContext)
+//static void* cl_nexradGifProcessor::threadWorker(pthreadFnArgs *context)
+{
+	// files/directory
+	unsigned int totalFileCount, fileMatchCount, fileCheckedCount, processedFileCount, addedFileCount;
+	unsigned int skippedImages, erroredImages, removedErroredImages, id = 0;
+	//string radarOutput, radarPathStr, radarfile, fullradarfile;
+	//FILE *radarFile, *dataCache, *imageCache;
+	//DIR *radarDir;
+	//struct dirent *entry;
+	list<unsigned int> epoch, epochPrime;
+	//list<string> radarFileList;
+	char *radarPath, *radarFile;
+
+	// date/time
+	char buffer[5];
+	tm timeStruct;
+	time_t thisTime, lastTime;
+	clock_t beginAnalysisClock, endAnalysisClock, beginImageClock, endImageClock, skippedTime = 0;
+
+	// regex
+	regex_t re;
+	size_t nmatch = 6;
+	regmatch_t pmatch[6];
+
+	// assign default values
+	bool removedErrored = false;
+	bool skipExisting = SKIP_EXISTING_RADAR;
+
+	radarClock = dbzClock = cellClock = metaClock = 0;
+//	zmqContext = threadZmqContext;
+
+	void *receiver = zmq_socket(zmqContext, ZMQ_REP);
+	zmq_connect(receiver, "inproc://workers");
+
+	while(1)
+	{
+		beginImageClock = clock();
+
+		// we're getting this from ZMQ socket now
+		radarPath = s_recv(receiver);
+		radarFile = s_recv(receiver);
+
+		//if (strcmp(0
+		// if receive exit command, terminate cleanly
+
+		radarFilename = (char *)malloc(strlen(radarPath) + strlen(radarFile) + 1);
+		memcpy(radarFilename, radarPath, strlen(radarPath));
+		memcpy(radarFilename+strlen(radarPath), radarFile, strlen(radarFile));
+
+		printf("received request: %s\n", radarFilename);
+		//radarFileList.pop_front();
+
+		// Do we keep this in C or migrate to Python?
+		// If migrated, makes for more information to IPC
+		// Minimal, yes...  but cleaner design - just pass filename - anything else??
+		unsigned int year	= atoi(substr(buffer, radarFilename, pmatch[1].rm_so, 4));
+		unsigned int month	= atoi(substr(buffer, radarFilename, pmatch[2].rm_so, 2));
+		unsigned int day	= atoi(substr(buffer, radarFilename, pmatch[3].rm_so, 2));
+		unsigned int hour	= atoi(substr(buffer, radarFilename, pmatch[4].rm_so, 2));
+		unsigned int minute	= atoi(substr(buffer, radarFilename, pmatch[5].rm_so, 2));
+
+		timeStruct.tm_year	= year - 1900;
+		timeStruct.tm_mon	= month;
+		timeStruct.tm_mday	= day;
+		timeStruct.tm_hour 	= hour;
+		timeStruct.tm_min	= minute;
+		timeStruct.tm_sec 	= 0;
+
+		lastTime = thisTime;
+		thisTime = mktime(&timeStruct);
+
+//		fullradarfile = radarPathStr + radarFilename;
+		epoch.push_back(thisTime);
+
+		printf("\n\nradar image : %s [%d/%d]\n", radarFilename, ++fileCheckedCount, fileMatchCount);
+		printf("timestamp : %04d-%02d-%02d %02d:%02d, epoch = %d\n", year, month, day, hour, minute, (int)thisTime);
+
+		int ret = processImage(id, skipExisting);
+
+		// Error with image - did not analyze, do not count processing time
+		// to avoid artificially skewing processing metric higher
+		if (ret <= ERROR_CANT_OPEN)
+		{
+			endImageClock = clock();
+			skippedTime += (endImageClock - beginImageClock);
+			erroredImages++;
+
+			// If the file is non GIF-compliant and set for removal-on-error then do so
+			if (ret == ERROR_NON_GIF && removedErrored)			// default is to not remove because we do not log this yet
+			{
+				printf("removing non GIF-compliant file %s\n", radarFilename);
+				unlink(radarFilename);
+				removedErroredImages++;
+			}
+		}
+		// Image already in db & set to skip, again do not count processing time
+		else if (ret == ERROR_SKIP_IMAGE) {
+			endImageClock = clock();
+			skippedTime += (endImageClock - beginImageClock);
+			skippedImages++;
+		}
+		// Processing was OK, just no storm activity detected in image
+		else if (ret == 0) {
+			processedFileCount++;
+		}
+		// Processed OK!
+		else if (ret > 0) {
+			processedFileCount++;
+ 			//if (radarDB.addRadarToDB(id, radarFilename) > 0) addedFileCount++;
+ 			//if (addRadarToDB(id, fullradarfile.c_str(), imageDB) > 0) addedFileCount++;
+		}
+
+
+
+//		free(string);
+		s_send(receiver, (char *)"result");
+	}
+
+	zmq_close(receiver);
+	return NULL;
+}
+
 
 int main(int argc, char *argv[])
 {
@@ -1877,8 +1992,9 @@ int main(int argc, char *argv[])
 	radarClock = dbzClock = cellClock = metaClock = 0;
 
 	// classes
-	cl_radarDB radarDB;
-	cl_nexradGif radarImage;
+	cl_radarDB *radarDB;
+	cl_nexradGifProcessor *gifProcessor;
+	cl_nexradGifProcessor *gifProcessWorkers[NUM_PROCESS_WORKERS];
 
 	// sqlite3 database
 	int rc;
@@ -1960,6 +2076,9 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	// <deprecate> Soon to be replaced by Python master node //
+
+
 	// Prep our paths
 	radarPathStr = radarPath;
  	if (radarPathStr.substr(radarPathStr.length(), 1) != "/")
@@ -1974,23 +2093,57 @@ int main(int argc, char *argv[])
 	printf("skip existing images: %d\n\n", skipExisting);
 	if (dryRun) { exit(0); }
 
-
-	// Start the clock
-	beginAnalysisClock = clock();
-
+	
 	// Open our databases
 	printf("opening databases...");
-	radarDB.openDBs(metaDbPath.c_str(), radarDbPath.c_str());
-	radarImage.setDB(&radarDB);
+	radarDB = new cl_radarDB();
+	radarDB->openDBs(metaDbPath.c_str(), radarDbPath.c_str());
+	//radarProcessor.setDB(&radarDB);
 	printf("done\n");
 	fflush(stdout);
+
+
+	// Create our workers
+	void *context = zmq_init(1);
+	assert(context);
+	for (int i=0; i<NUM_PROCESS_WORKERS; i++) {
+//		gifProcessWorkers[i] = new cl_nexradGifProcessor(radarDB, context);
+	}
+	gifProcessor = new cl_nexradGifProcessor(radarDB, context);
+
+	// Create sockets and bind ZMQ contexts
+	void *client = zmq_socket(context, ZMQ_ROUTER);
+	assert(client);
+	rc = zmq_bind(client, "tcp://*:5555");
+	assert(rc == 0);
+
+	void *workers = zmq_socket(context, ZMQ_DEALER);
+	assert(workers);
+	rc = zmq_bind(workers, "inproc://workers");
+	assert(rc == 0);
+
+/* 	void *control = zmq_socket(context, ZMQ_PUB);
+ * 	assert(control);
+ * 	rc = zmq_bind(control, "tcp://*:5556");
+ * 	// TODO: zmq_bind VS zmq_connect
+ * 	zmq_setsockopt(control, ZMQ_SUBSCRIBE, "", 0);
+ * 	assert(rc == 0);
+ */
+
+//	zmq_device(ZMQ_QUEUE, client, workers);
+
+
+	// Start the clock
+	// How do we accurately measure time when switching
+	// processing models to worker/slaves?
+	beginAnalysisClock = clock();
 
 
 	// Start processing our arguments
 	if (radarFilename) {
 //		processImage(id, radarFilename, metaDB, skipExisting);
-		radarImage.setFile(radarFilename);
-		radarImage.processImage(id, skipExisting);
+		gifProcessor->setFile(radarFilename);
+		gifProcessor->processImage(id, skipExisting);
 // 		sqlite3_close(metaDB);
 // 		sqlite3_close(imageDB);
 		shutdownApplication(true, 0);
@@ -2045,7 +2198,15 @@ int main(int argc, char *argv[])
 
 	printf("done, %d/%d found\n", fileMatchCount, totalFileCount);
 
+
+	// </deprecate> Start of actual C core processing //
+
+
 	// Iterate through radar files and process them
+	// This will shortly change to poll master thread, receive image name
+	// and process, rather then keeping an internal list
+	// If there is substancial latency with communication, should we keep
+	// a short internal buffer/list of images??
 	while(!radarFileList.empty() && fileCheckedCount < MAX_FILES && !shutdownSignal)
 	{
 		beginImageClock = clock();
@@ -2053,6 +2214,9 @@ int main(int argc, char *argv[])
 		radarfile = radarFileList.front();
 		radarFileList.pop_front();
 
+		// Do we keep this in C or migrate to Python?
+		// If migrated, makes for more information to IPC
+		// Minimal, yes...  but cleaner design - just pass filename - anything else??
 		unsigned int year	= atoi(substr(buffer, radarfile.c_str(), pmatch[1].rm_so, 4));
 		unsigned int month	= atoi(substr(buffer, radarfile.c_str(), pmatch[2].rm_so, 2));
 		unsigned int day	= atoi(substr(buffer, radarfile.c_str(), pmatch[3].rm_so, 2));
@@ -2071,12 +2235,11 @@ int main(int argc, char *argv[])
 		fullradarfile = radarPathStr + radarfile;
 		epoch.push_back(thisTime);
 
-		printf("\n\nradar image : %d/%d\n", ++fileCheckedCount, fileMatchCount);
-		printf("source image : %s\n", fullradarfile.c_str());
+		printf("\n\nradar image : %s [%d/%d]\n", fullradarfile.c_str(), ++fileCheckedCount, fileMatchCount);
 		printf("timestamp : %04d-%02d-%02d %02d:%02d, epoch = %d\n", year, month, day, hour, minute, (int)thisTime);
 
-		radarImage.setFile(fullradarfile.c_str());
-		int ret = radarImage.processImage(id, skipExisting);
+		gifProcessor->setFile((char *)fullradarfile.c_str());
+		int ret = gifProcessor->processImage(id, skipExisting);
 
 		// Error with image - did not analyze, do not count processing time
 		// to avoid artificially skewing processing metric higher
@@ -2107,7 +2270,7 @@ int main(int argc, char *argv[])
 		// Processed OK!
 		else if (ret > 0) {
 			processedFileCount++;
- 			if (radarDB.addRadarToDB(id, fullradarfile.c_str()) > 0) addedFileCount++;
+ 			if (radarDB->addRadarToDB(id, fullradarfile.c_str()) > 0) addedFileCount++;
  			//if (addRadarToDB(id, fullradarfile.c_str(), imageDB) > 0) addedFileCount++;
 		}
     }
@@ -2127,12 +2290,14 @@ int main(int argc, char *argv[])
 		   ((fileCheckedCount-skippedImages)/totalTimeElapsed));
 
 	float sum = enumPixelsClock + enumCellsClock + radarClock + dbzClock + cellClock + metaClock;
-	printf("pixels:   %f / %f = %f\n", enumPixelsClock, sum, enumPixelsClock/sum);
-	printf("cells:    %f / %f = %f\n", enumCellsClock, sum, enumCellsClock/sum);
-	printf("radarIns: %f / %f = %f\n", radarClock, sum, radarClock/sum);
-	printf("dbzIns:   %f / %f = %f\n", dbzClock, sum, dbzClock/sum);
-	printf("cellIns:  %f / %f = %f\n", cellClock, sum, cellClock/sum);
-	printf("metaIns:  %f / %f = %f\n", metaClock, sum, metaClock/sum);
+	sum /= 100.0;
+	printf("\nprofiling breakdown:\n");
+	printf("pixels:   %10.2f ( %4.1f%% )\n", enumPixelsClock, enumPixelsClock/sum);
+	printf("cells:    %10.2f ( %4.1f%% )\n", enumCellsClock, enumCellsClock/sum);
+	printf("radarIns: %10.2f ( %4.1f%% )\n", radarClock, radarClock/sum);
+	printf("dbzIns:   %10.2f ( %4.1f%% )\n", dbzClock, dbzClock/sum);
+	printf("cellIns:  %10.2f ( %4.1f%% )\n", cellClock, cellClock/sum);
+	printf("metaIns:  %10.2f ( %4.1f%% )\n", metaClock, metaClock/sum);
 
 	return EXIT_SUCCESS;
 }
@@ -2148,5 +2313,9 @@ void shutdownApplication(bool exitOnCompletion = false, int returnCode = 0)
 {
 	//delete radarDB;
 
+/* 	zmq_close(clients);
+ * 	zmq_close(workers);
+ */
+//	zmq_term(context);
 	if (exitOnCompletion) exit(returnCode);
 }

@@ -72,13 +72,13 @@
 #define MAGIC									0xAD80
 #define VERSION									"2.0\0"
 #define DEFAULT_RADAR_OUT						"radarout.gif"
-#define RADAR_PATH								"radar/"
-#define CACHE_PATH								"cache/"
+#define RADAR_PATH								"radar/\0"
+#define CACHE_PATH								"cache/\0"
 #define RADAR_STATION							"DIX"
 #define RADAR_TYPE								"NCR"
 
 #define MAX_FILES								25000
-#define NUM_PROCESS_WORKERS						2	
+#define NUM_WORKERS								2	
 
 #define SKIP_EXISTING_RADAR						true
 #define FLAG_REMOVE_EMPTY_IMAGES				1
@@ -275,32 +275,64 @@ public:
 class cl_nexradGifProcessor
 {
 private:
-	cl_radarDB *radarDB;
+	// source image files
 	gdImagePtr radarGdImage;
 	char *radarFilename;
-	void *receiver;
+	char *radarPath;
+
+	// source nexrad station
+	char *station;
+	char *type;
+
+	// database
+	cl_radarDB *radarDB;
+	
+	// zmq sockets
+	void *receiver, *controller;
+	
+	// threads
 	pthread_t thread;
-//	void *zmqContext;
+	unsigned int threadId;					// internal representation, not OS
+	
+	// logs
+	FILE *log;
+	char *logFile;
 
 public:
-	cl_nexradGifProcessor(void) {
+	cl_nexradGifProcessor(void)
+	{
 		radarFilename = NULL;
+		radarPath = NULL;
+		log = NULL;
+		station = NULL;
+		type = NULL;
 	}
+
 	cl_nexradGifProcessor(cl_radarDB *db, void *zmqContext)
 	{
+		radarFilename = NULL;
+		radarPath = NULL;
+		log = NULL;
+		station = NULL;
+		type = NULL;
+
+		radarDB = db;
+//		radarPath = NULL;
+//		radarFilename = NULL;
 		pthreadFnArgs *threadArgs = (pthreadFnArgs *)malloc(sizeof(pthreadFnArgs));
+		assert(threadArgs != NULL);
  		threadArgs->zmqContext = zmqContext;
 		threadArgs->cppClassContext = this;
-//		setContext(context);
-//		setDB(db);
-		radarDB = db;
-		radarFilename = NULL;
 		//pthread_create(&thread, NULL, (void *)(threadWorker), context);
 		//pthread_create(&thread, NULL, &cl_nexradGifProcessor::threadWorker, context);
-//		pthread_create(&thread, NULL, &cl_nexradGifProcessor::_threadWorker, (void *)(void*)threadArgs);
+//		fflush(stdout); printf("creating new thread..."); fflush(stdout);
+		pthread_create(&thread, NULL, &cl_nexradGifProcessor::_threadWorker, (void *)(void*)threadArgs);
+//		fflush(stdout); printf("created thread %08x\n", thread); fflush(stdout);
 	}
+
 	~cl_nexradGifProcessor(void)
 	{
+		//killThread();
 		// kill thread
 //		pthread_join(thread, NULL);
 	}
@@ -310,16 +342,25 @@ public:
 		context->cppClassContext->threadWorker((void *)context->zmqContext);
 		return NULL;
 	}
+
 	void setDB(cl_radarDB *db) { radarDB = db; }
-//	void setContext(void *context) {
-//		receiver = zmq_socket(context, ZMQ_REP);
-//	}
+	void setThreadId(unsigned int id) { threadId = id; }
+	void setStation(char *newStation) { station = newStation; }
+
 	void setFile(char *filename)
 	{ 
 		if (radarFilename != NULL) 
 			free(radarFilename);
 		radarFilename = (char *)malloc(strlen(filename));
 		memcpy(radarFilename,filename,strlen(filename));
+	}
+
+	void setPath(char *path)
+	{
+		if (radarPath != NULL) 
+			free(radarPath);
+		radarPath = (char *)malloc(strlen(path));
+		memcpy(radarPath,path,strlen(path));
 	}
 
 	inline int GetFullPixelDBZIndex(unsigned int x, unsigned int y);
@@ -330,7 +371,48 @@ public:
 	//int processImage(unsigned int &newId, const char *radarfile, bool skipExisting);
 	int processImage(unsigned int &newId, bool skipExisting);
 	void* threadWorker(void *threadZmqContext);
+	int handleRequest(char *radarFile);
+	void killThread(void);
+};
 
+
+class cl_radarWatch
+{
+private:
+	cl_radarDB *radarDB;
+	cl_nexradGifProcessor *gifProcessor;
+	cl_nexradGifProcessor *gifProcessWorkers[NUM_WORKERS];
+
+	unsigned int numThreads;
+	bool daemonRunning;
+	
+	// paths/params
+	char *station;
+	char *dbPath, *radarPath;
+
+	// prefs
+	bool skipExisting;
+
+	// zmq
+	void *context, *client, *workers, *control;
+
+
+public:
+	cl_radarWatch(void) {
+		numThreads = NUM_WORKERS;
+		daemonRunning = false;
+	}
+	~cl_radarWatch(void) {
+		shutdown();
+	}
+
+	void setThreadId(unsigned int id);
+	void setDbPath(const char *newPath);
+	void setRadarPath(char *newPath);
+	void setStation(char *newStation);
+	unsigned int init(void);
+	void startDaemon(void);
+	void shutdown(void);
 };
 
 

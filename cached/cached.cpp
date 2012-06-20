@@ -39,24 +39,21 @@ using namespace std;
 // Storm ID matrix used for identifying individual storms
 static unsigned int **cellIDMatrix = NULL;
 
-// Our source radar image
-//gdImagePtr radarGdImage;
-
-// SQLite database
-//sqlite3 *metaDB, *imageDB;
-//cl_radarDB radarDB;
-
 // Keep track of how many storm-free radar images were removed
 unsigned int removedImagesCount = 0;
 unsigned int markedDeletionCount = 0;
 
 // Debugging
 bool debug = false;
-volatile bool shutdownSignal = false;
+static volatile bool shutdownSignal = false;
 
 // Clocks/timing
 clock_t start, end;
 double enumPixelsClock, enumCellsClock, radarClock, dbzClock, cellClock, metaClock;
+
+
+// main class
+cl_radarWatch rwSystem;
 
 
 char *substr(char *dest, const char *src, int position, int length)
@@ -1842,6 +1839,104 @@ int cl_nexradGifProcessor::processImage(unsigned int &newId, bool skipExisting)
 void* cl_nexradGifProcessor::threadWorker(void *zmqContext)
 //static void* cl_nexradGifProcessor::threadWorker(pthreadFnArgs *context)
 {
+	int rc;
+	char *radarFile;
+
+	char logFile[128]; 
+//	snprintf(logFile, 128, "worker-%lu.log", (long unsigned int)thread);
+	snprintf(logFile, 128, "worker-%d.log", threadId);
+	log = fopen(logFile, "w");
+	if (!log)
+		fprintf(stderr, "error opening logfile %s\n", logFile);
+	else {
+		fprintf(stderr, "thread ID %lu starting up...\n", (long unsigned int)thread);
+		fprintf(log, "thread ID %lu starting up...\n", (long unsigned int)thread);
+	}
+
+	fflush(stdout); printf("creating zmq_socket..."); fflush(stdout);
+
+	receiver = zmq_socket(zmqContext, ZMQ_REP);
+	zmq_connect(receiver, "inproc://workers");
+	fflush(stdout); printf("done...\n"); fflush(stdout);
+
+	controller = zmq_socket(zmqContext, ZMQ_SUB);
+	zmq_connect(controller, "inproc://control");
+	zmq_setsockopt(controller, ZMQ_SUBSCRIBE, "", 0);
+
+
+	zmq_pollitem_t items[] = {
+		{ receiver, 0, ZMQ_POLLIN, 0 },
+		{ controller, 0, ZMQ_POLLIN, 0 }
+	};
+
+	fflush(log);
+
+	while(1)
+	{
+		zmq_msg_t message;
+		zmq_poll(items, 2, -1);
+
+		if (items[0].revents & ZMQ_POLLIN)
+		{
+/* 			zmq_msg_init(&message);
+ * 			zmq_recv(receiver, &message, 0);
+ * 			int size = zmq_msg_size(&message);
+ * //			char *string = malloc(size + 1);
+ * //			memcpy(string, zmq_msg_data(&message), size);
+ * //			zmq_msg_close(&message);
+ * //			string[size] = 0;
+ * 			radarFile = (char *)malloc(size + 1);
+ * 			memcpy(radarFile, zmq_msg_data(&message), size);
+ * 			radarFile[size] = 0;
+ */
+
+			radarFile = s_recv(receiver);
+			fprintf(stderr, "w");
+			rc = s_send(receiver, "ACK");
+			if (rc != 0)
+			{
+				fprintf(stderr, "!W%d-%s\n", rc, zmq_strerror(rc));
+				assert(s_send(receiver, "OK") == 0);
+				sleep(1);
+			}
+			fprintf(stderr, "W");
+//			zmq_msg_init_data(&message, "OK", 3);
+//			zmq_send(receiver, &message, 0);
+//			zmq_msg_close(&message);
+
+			fprintf(stderr, "%d\n", threadId, radarFile);
+			fflush(stderr);
+			//fprintf(stderr, "radarFile[%d]: %s\n", threadId, radarFile);
+//			handleRequest(radarFile);
+			free(radarFile);
+//			free(string);
+		}
+		if (items[1].revents & ZMQ_POLLIN) {
+			fprintf(stderr, "received KILL on %d\n", threadId);
+			break;
+		}
+	}
+
+	fprintf(stderr, "Killing worker thread...\n");
+	fflush(stderr);
+
+	if (log != NULL)
+	{
+		fprintf(log, "Shutting down thread...\n");
+		fclose(log);
+	}
+
+	int zero = 0;
+	zmq_setsockopt(controller, ZMQ_LINGER, &zero, sizeof(zero));
+	zmq_setsockopt(receiver, ZMQ_LINGER, &zero, sizeof(zero));
+
+	zmq_close(controller);
+	zmq_close(receiver);
+}
+
+
+int cl_nexradGifProcessor::handleRequest(char *radarFile)
+{
 	// files/directory
 	unsigned int totalFileCount, fileMatchCount, fileCheckedCount, processedFileCount, addedFileCount;
 	unsigned int skippedImages, erroredImages, removedErroredImages, id = 0;
@@ -1851,7 +1946,8 @@ void* cl_nexradGifProcessor::threadWorker(void *zmqContext)
 	//struct dirent *entry;
 	list<unsigned int> epoch, epochPrime;
 	//list<string> radarFileList;
-	char *radarPath, *radarFile;
+//	char *radarPath, *radarFile;
+//	char *radarFile;
 
 	// date/time
 	char buffer[5];
@@ -1870,97 +1966,312 @@ void* cl_nexradGifProcessor::threadWorker(void *zmqContext)
 
 	radarClock = dbzClock = cellClock = metaClock = 0;
 //	zmqContext = threadZmqContext;
+	//threadId = pthread_self();
 
-	void *receiver = zmq_socket(zmqContext, ZMQ_REP);
-	zmq_connect(receiver, "inproc://workers");
+	// we're getting this from ZMQ socket now
+	//radarPath = s_recv(receiver);
+	//radarFile = s_recv(receiver);
+	//assert(receiver);
 
-	while(1)
-	{
-		beginImageClock = clock();
+	fprintf(log, "in handleRequest()\n");
+	fflush(log);
+	beginImageClock = clock();
 
-		// we're getting this from ZMQ socket now
-		radarPath = s_recv(receiver);
-		radarFile = s_recv(receiver);
+	//if (strcmp(0
+	// if receive exit command, terminate cleanly
 
-		//if (strcmp(0
-		// if receive exit command, terminate cleanly
+	fprintf(stderr, "radarPath: %s, radarFile: %s\n", radarPath, radarFile);
+	int radarFilenameSz = strlen(radarPath) + strlen(radarFile);
+	radarFilename = (char *)malloc(radarFilenameSz + 1);
+	radarFilename[strlen(radarPath)] = '/';
+	radarFilename[radarFilenameSz+1] = '\0';
+	memcpy(radarFilename, radarPath, strlen(radarPath));
+	memcpy(radarFilename+strlen(radarPath)+1, radarFile, strlen(radarFile));
 
-		radarFilename = (char *)malloc(strlen(radarPath) + strlen(radarFile) + 1);
-		memcpy(radarFilename, radarPath, strlen(radarPath));
-		memcpy(radarFilename+strlen(radarPath), radarFile, strlen(radarFile));
+	fprintf(stderr, "received request: %s\n", radarFilename);
+	fprintf(log, "received request: %s\n", radarFilename);
+	fflush(log);
+	//radarFileList.pop_front();
 
-		printf("received request: %s\n", radarFilename);
-		//radarFileList.pop_front();
+	// Do we keep this in C or migrate to Python?
+	// If migrated, makes for more information to IPC
+	// Minimal, yes...  but cleaner design - just pass filename - anything else??
+	string radarFileRegx = station;
+	radarFileRegx += "_([0-9]{4})([0-9]{2})([0-9]{2})_([0-9]{2})([0-9]{2})_";
+	radarFileRegx += RADAR_TYPE;
+	radarFileRegx += ".gif";
+	if (regcomp(&re, radarFileRegx.c_str(), REG_EXTENDED) != 0) {
+		fprintf(stderr, "Unable to compile regex, aborting...\n");
+		fflush(stderr);
+		return -1;
+//		shutdownApplication(true, 1);
+	}
+	int status = regexec(&re, radarFile, nmatch, pmatch, 0);
+	if (status != 0) {
+		return -1;
+	}
+	unsigned int year	= atoi(substr(buffer, radarFile, pmatch[1].rm_so, 4));
+	unsigned int month	= atoi(substr(buffer, radarFile, pmatch[2].rm_so, 2));
+	unsigned int day	= atoi(substr(buffer, radarFile, pmatch[3].rm_so, 2));
+	unsigned int hour	= atoi(substr(buffer, radarFile, pmatch[4].rm_so, 2));
+	unsigned int minute	= atoi(substr(buffer, radarFile, pmatch[5].rm_so, 2));
+	regfree(&re);
 
-		// Do we keep this in C or migrate to Python?
-		// If migrated, makes for more information to IPC
-		// Minimal, yes...  but cleaner design - just pass filename - anything else??
-		unsigned int year	= atoi(substr(buffer, radarFilename, pmatch[1].rm_so, 4));
-		unsigned int month	= atoi(substr(buffer, radarFilename, pmatch[2].rm_so, 2));
-		unsigned int day	= atoi(substr(buffer, radarFilename, pmatch[3].rm_so, 2));
-		unsigned int hour	= atoi(substr(buffer, radarFilename, pmatch[4].rm_so, 2));
-		unsigned int minute	= atoi(substr(buffer, radarFilename, pmatch[5].rm_so, 2));
+	timeStruct.tm_year	= year - 1900;
+	timeStruct.tm_mon	= month;
+	timeStruct.tm_mday	= day;
+	timeStruct.tm_hour 	= hour;
+	timeStruct.tm_min	= minute;
+	timeStruct.tm_sec 	= 0;
 
-		timeStruct.tm_year	= year - 1900;
-		timeStruct.tm_mon	= month;
-		timeStruct.tm_mday	= day;
-		timeStruct.tm_hour 	= hour;
-		timeStruct.tm_min	= minute;
-		timeStruct.tm_sec 	= 0;
-
-		lastTime = thisTime;
-		thisTime = mktime(&timeStruct);
+	lastTime = thisTime;
+	thisTime = mktime(&timeStruct);
 
 //		fullradarfile = radarPathStr + radarFilename;
-		epoch.push_back(thisTime);
+//	epoch.push_back(thisTime);
 
-		printf("\n\nradar image : %s [%d/%d]\n", radarFilename, ++fileCheckedCount, fileMatchCount);
-		printf("timestamp : %04d-%02d-%02d %02d:%02d, epoch = %d\n", year, month, day, hour, minute, (int)thisTime);
+	fprintf(log, "\n\nradar image : %s [%d/%d]\n", radarFilename, ++fileCheckedCount, fileMatchCount);
+	fprintf(log, "timestamp : %04d-%02d-%02d %02d:%02d, epoch = %d\n", year, month, day, hour, minute, (int)thisTime);
+	fflush(log);
+	return 0;
 
-		int ret = processImage(id, skipExisting);
+	int ret = processImage(id, skipExisting);
 
-		// Error with image - did not analyze, do not count processing time
-		// to avoid artificially skewing processing metric higher
-		if (ret <= ERROR_CANT_OPEN)
+	fprintf(log, "result code: %d\n", ret);
+
+	// Error with image - did not analyze, do not count processing time
+	// to avoid artificially skewing processing metric higher
+	if (ret <= ERROR_CANT_OPEN)
+	{
+		endImageClock = clock();
+		skippedTime += (endImageClock - beginImageClock);
+		erroredImages++;
+
+		// If the file is non GIF-compliant and set for removal-on-error then do so
+		if (ret == ERROR_NON_GIF && removedErrored)			// default is to not remove because we do not log this yet
 		{
-			endImageClock = clock();
-			skippedTime += (endImageClock - beginImageClock);
-			erroredImages++;
-
-			// If the file is non GIF-compliant and set for removal-on-error then do so
-			if (ret == ERROR_NON_GIF && removedErrored)			// default is to not remove because we do not log this yet
-			{
-				printf("removing non GIF-compliant file %s\n", radarFilename);
-				unlink(radarFilename);
-				removedErroredImages++;
-			}
+			fprintf(log, "removing non GIF-compliant file %s\n", radarFilename);
+			unlink(radarFilename);
+			removedErroredImages++;
 		}
-		// Image already in db & set to skip, again do not count processing time
-		else if (ret == ERROR_SKIP_IMAGE) {
-			endImageClock = clock();
-			skippedTime += (endImageClock - beginImageClock);
-			skippedImages++;
-		}
-		// Processing was OK, just no storm activity detected in image
-		else if (ret == 0) {
-			processedFileCount++;
-		}
-		// Processed OK!
-		else if (ret > 0) {
-			processedFileCount++;
- 			//if (radarDB.addRadarToDB(id, radarFilename) > 0) addedFileCount++;
- 			//if (addRadarToDB(id, fullradarfile.c_str(), imageDB) > 0) addedFileCount++;
-		}
-
-
-
-//		free(string);
-		s_send(receiver, (char *)"result");
+	}
+	// Image already in db & set to skip, again do not count processing time
+	else if (ret == ERROR_SKIP_IMAGE) {
+		endImageClock = clock();
+		skippedTime += (endImageClock - beginImageClock);
+		skippedImages++;
+	}
+	// Processing was OK, just no storm activity detected in image
+	else if (ret == 0) {
+		processedFileCount++;
+	}
+	// Processed OK!
+	else if (ret > 0) {
+		processedFileCount++;
+		//if (radarDB.addRadarToDB(id, radarFilename) > 0) addedFileCount++;
+		//if (addRadarToDB(id, fullradarfile.c_str(), imageDB) > 0) addedFileCount++;
 	}
 
-	zmq_close(receiver);
-	return NULL;
+//		free(string);
+//		s_send(receiver, (char *)"result");
+	fflush(log);
+	return 0;
 }
+
+
+void cl_nexradGifProcessor::killThread(void)
+{
+	return; 
+
+	if (log != NULL)
+	{
+		fprintf(log, "Shutting down thread...\n");
+		fclose(log);
+	}
+
+	if (controller != NULL)
+		zmq_close(controller);	
+	if (receiver != NULL)
+		zmq_close(receiver);	
+}
+
+
+/*** radarWatch class ***/
+
+void cl_radarWatch::setDbPath(const char *newPath) {
+	dbPath = (char *)newPath;
+}
+
+void cl_radarWatch::setRadarPath(char *newPath) {
+	radarPath = newPath;
+}
+
+void cl_radarWatch::setStation(char *newStation) {
+	station = newStation;
+}
+
+void cl_radarWatch::startDaemon(void)
+{
+	int rc;
+	unsigned int r, c;
+	r = c = 0;
+	
+	zmq_pollitem_t items[] = {
+		{ client, 0, ZMQ_POLLIN, 0 },
+		{ workers, 0, ZMQ_POLLIN, 0 }
+	};
+
+	daemonRunning = true;
+
+	while(daemonRunning)
+	{
+		zmq_msg_t message;
+		int64_t more;
+
+		fprintf(stderr, "p");
+        zmq_poll (items, 2, 1000000);
+		fprintf(stderr, "P");
+        if (items [0].revents & ZMQ_POLLIN) {
+            while (1)
+			{
+				c++;
+                //  Process all parts of the message
+				fprintf(stderr, "l");
+                zmq_msg_init (&message);
+				fprintf(stderr, "i");
+                zmq_recv (client, &message, 0);
+				fprintf(stderr, "r");
+                size_t more_size = sizeof (more);
+                zmq_getsockopt (client, ZMQ_RCVMORE, &more, &more_size);
+				fprintf(stderr, "o");
+                zmq_send (workers, &message, more? ZMQ_SNDMORE: 0);
+				fprintf(stderr, "s");
+                zmq_msg_close (&message);
+				fprintf(stderr, "c");
+                if (!more)
+                    break;      //  Last message part
+            }
+        }
+        if (items [1].revents & ZMQ_POLLIN) {
+            while (1)
+			{
+                //  Process all parts of the message
+				r++;
+				fprintf(stderr, "L");
+                zmq_msg_init (&message);
+				fprintf(stderr, "I");
+                rc = zmq_recv (workers, &message, ZMQ_NOBLOCK);
+				if (rc != 0) {
+					fprintf(stderr, "!%d-%s\n", rc, zmq_strerror(rc));
+					break;
+				}
+				fprintf(stderr, "R");
+                size_t more_size = sizeof (more);
+                zmq_getsockopt (workers, ZMQ_RCVMORE, &more, &more_size);
+//				fprintf(stderr, "O");
+                zmq_send (client, &message, more? ZMQ_SNDMORE: 0);
+				fprintf(stderr, "S");
+                zmq_msg_close (&message);
+				fprintf(stderr, "C");
+                if (!more)
+                    break;      //  Last message part
+            }
+        }
+ 	}
+
+	//fprintf(stderr, "zmq_device() returned with rc=%d\n", rc);
+	fprintf(stderr, "c/r: %d/%d\nSystem shutdown, terminating\n", c, r); fflush(stderr);
+	zmq_term(context);
+	exit(0);
+}
+
+
+void cl_radarWatch::shutdown(void)
+{
+	fprintf(stderr, "in shutdown()\n");
+	//sleep(20);
+	s_send(control, "KILL");		
+	sleep(1);
+
+	fprintf(stderr, "threads killed..."); fflush(stderr);
+
+	int zero = 0;
+	zmq_setsockopt(workers, ZMQ_LINGER, &zero, sizeof(zero));
+	zmq_setsockopt(control, ZMQ_LINGER, &zero, sizeof(zero));
+	zmq_setsockopt(client, ZMQ_LINGER, &zero, sizeof(zero));
+
+	zmq_close(workers);
+	zmq_close(control);
+	zmq_close(client);
+
+	fprintf(stderr, "zmq sockets closed..."); fflush(stderr);
+
+	daemonRunning = false;	
+}
+
+
+unsigned int cl_radarWatch::init(void)
+{
+	int rc;
+
+	string dbpath = dbPath;
+	string metaDbPath = dbpath + "/" + SQLITE_META_DB;
+	string radarDbPath = dbpath + "/" + SQLITE_IMAGE_DB;
+
+	printf("using radar path: %s\n", radarPath);
+	printf("using radar station: %s\n", station);
+//	printf("using database path: %s\n", dbPath.c_str());
+	printf("using database path: %s\n", dbPath);
+	printf("skip existing images: %d\n\n", skipExisting);
+
+
+	// Open our databases
+	printf("opening databases...");
+	radarDB = new cl_radarDB();
+	radarDB->openDBs(metaDbPath.c_str(), radarDbPath.c_str());
+	//radarProcessor.setDB(&radarDB);
+	printf("done\n");
+	fflush(stdout);
+
+	// Create our workers
+//	printf("creating zmq context..."); fflush(stdout);
+	context = zmq_init(1);
+	assert(context);
+//	printf("done\n"); fflush(stdout);
+
+	// Create sockets and bind ZMQ contexts
+	client = zmq_socket(context, ZMQ_ROUTER);
+	assert(client);
+	rc = zmq_bind(client, "tcp://*:5555");
+	assert(rc == 0);
+
+	workers = zmq_socket(context, ZMQ_DEALER);
+	assert(workers);
+	rc = zmq_bind(workers, "inproc://workers");
+	assert(rc == 0);
+
+	control = zmq_socket(context, ZMQ_PUB);
+	assert(control);
+	rc = zmq_bind(control, "inproc://control");
+	// TODO: zmq_bind VS zmq_connect
+	zmq_setsockopt(control, ZMQ_SUBSCRIBE, "", 0);
+	assert(rc == 0);
+
+
+	//numThreads = 1;					// Override our default
+	for (int i=0; i<numThreads, i<NUM_WORKERS; i++)
+	{
+		gifProcessWorkers[i] = new cl_nexradGifProcessor(radarDB, context);
+		assert(gifProcessWorkers[i] != NULL);
+		gifProcessWorkers[i]->setThreadId(i);
+		gifProcessWorkers[i]->setPath(radarPath);
+		gifProcessWorkers[i]->setStation(station);
+		// TODO: set path and other params only once and trickle down through objects
+	}
+//	gifProcessor = new cl_nexradGifProcessor(radarDB, context);
+
+}
+
 
 
 int main(int argc, char *argv[])
@@ -1994,7 +2305,7 @@ int main(int argc, char *argv[])
 	// classes
 	cl_radarDB *radarDB;
 	cl_nexradGifProcessor *gifProcessor;
-	cl_nexradGifProcessor *gifProcessWorkers[NUM_PROCESS_WORKERS];
+	cl_nexradGifProcessor *gifProcessWorkers[NUM_WORKERS];
 
 	// sqlite3 database
 	int rc;
@@ -2079,58 +2390,23 @@ int main(int argc, char *argv[])
 	// <deprecate> Soon to be replaced by Python master node //
 
 
+
 	// Prep our paths
-	radarPathStr = radarPath;
- 	if (radarPathStr.substr(radarPathStr.length(), 1) != "/")
- 		radarPathStr += "/";
+//	radarPathStr = radarPath;
+// 	if (radarPathStr.substr(radarPathStr.length(), 1) != "/")
+// 		radarPathStr += "/";
 
-	string metaDbPath = dbPath + "/" + SQLITE_META_DB;
-	string radarDbPath = dbPath + "/" + SQLITE_IMAGE_DB;
-
-	printf("using radar path: %s\n", radarPath);
-	printf("using radar station: %s\n", station);
-	printf("using database path: %s\n", dbPath.c_str());
-	printf("skip existing images: %d\n\n", skipExisting);
 	if (dryRun) { exit(0); }
 
-	
-	// Open our databases
-	printf("opening databases...");
-	radarDB = new cl_radarDB();
-	radarDB->openDBs(metaDbPath.c_str(), radarDbPath.c_str());
-	//radarProcessor.setDB(&radarDB);
-	printf("done\n");
-	fflush(stdout);
+	rwSystem.setStation(station);
+	rwSystem.setDbPath(dbPath.c_str());
+	rwSystem.setRadarPath(radarPath);
 
-
-	// Create our workers
-	void *context = zmq_init(1);
-	assert(context);
-	for (int i=0; i<NUM_PROCESS_WORKERS; i++) {
-//		gifProcessWorkers[i] = new cl_nexradGifProcessor(radarDB, context);
-	}
-	gifProcessor = new cl_nexradGifProcessor(radarDB, context);
-
-	// Create sockets and bind ZMQ contexts
-	void *client = zmq_socket(context, ZMQ_ROUTER);
-	assert(client);
-	rc = zmq_bind(client, "tcp://*:5555");
-	assert(rc == 0);
-
-	void *workers = zmq_socket(context, ZMQ_DEALER);
-	assert(workers);
-	rc = zmq_bind(workers, "inproc://workers");
-	assert(rc == 0);
-
-/* 	void *control = zmq_socket(context, ZMQ_PUB);
- * 	assert(control);
- * 	rc = zmq_bind(control, "tcp://*:5556");
- * 	// TODO: zmq_bind VS zmq_connect
- * 	zmq_setsockopt(control, ZMQ_SUBSCRIBE, "", 0);
- * 	assert(rc == 0);
- */
-
-//	zmq_device(ZMQ_QUEUE, client, workers);
+	rwSystem.init();
+	rwSystem.startDaemon();
+	// execution should stop here
+	fprintf(stderr, "reached end of execution\n");
+	return 0;
 
 
 	// Start the clock
@@ -2305,17 +2581,11 @@ int main(int argc, char *argv[])
 void signalHandler(int signum)
 {
 	shutdownSignal = true;
-	fprintf(stderr, "Caught SIGINT, cleaning up and exiting...\n");
+	fprintf(stderr, "Caught SIGINT, cleaning up and exiting...");
+	rwSystem.shutdown();
 	signal(signum, signalHandler);
 }
 
-void shutdownApplication(bool exitOnCompletion = false, int returnCode = 0)
-{
-	//delete radarDB;
-
-/* 	zmq_close(clients);
- * 	zmq_close(workers);
- */
-//	zmq_term(context);
+void shutdownApplication(bool exitOnCompletion = false, int returnCode = 0) {
 	if (exitOnCompletion) exit(returnCode);
 }

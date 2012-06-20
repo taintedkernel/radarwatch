@@ -1,0 +1,61 @@
+
+package radarwatch;
+
+message rwRequest
+{
+	// Request types
+	enum RequestType {
+		CTRL_COMMAND = 1;
+		IMAGE_ANALYSIS = 2;
+		CELL_TRACKING = 3;
+		DB_COMPACTION = 4;
+	}
+
+	// Analysis requests
+	enum ImageType {
+		NEXRAD_GIF = 1;
+		NEXRAD_RAW = 2;
+	}
+	
+	message Timestamp {
+		optional int32 year = 1;
+		required int32 month = 2;
+		required int32 day = 3;
+		required int32 hour = 4;
+		required int32 min = 5;
+		optional int32 sec = 6;
+		optional int32 epoch = 7;
+	}
+	
+	// Analysis request message
+	message AnalysisReqSrcData
+	{
+		required string filename = 1;
+		optional ImageType type = 2 [default = NEXRAD_GIF];
+		optional string path = 3;
+		optional Timestamp datetime = 4;
+	}
+
+	// Tracking requests
+	message TrackingReqCell {
+		optional string cellid = 1;
+	}
+
+	// Management requests
+	enum CtrlCommand {
+		CMD_SHUTDOWN = 1;
+	}
+
+	// Management request message
+	message CtrlReqCommand {
+		required CtrlCommand cmd = 1;
+		optional string cmdData = 2;
+	}
+
+	// Main request encapsulation
+	required RequestType type = 1;
+	optional AnalysisReqSrcData analysisData = 2;
+	optional TrackingReqCell cell = 3;
+	optional CtrlReqCommand op = 4;
+
+}

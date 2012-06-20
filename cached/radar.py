@@ -5,20 +5,20 @@
 #
 #	Copyright 2010 Anthony DeChiaro
 #
-#	This file is part of pyRadar.
+#	This file is part of radarWatch.
 #
-#	pyRadar is free software; you can redistribute it and/or modify
+#	radarWatch is free software; you can redistribute it and/or modify
 #	it under the terms of the GNU General Public License as published by
 #	the Free Software Foundation; either version 2 of the License, or
 #	any later version.
 #
-#	pyRadar is distributed in the hope that it will be useful,
+#	radarWatch is distributed in the hope that it will be useful,
 #	but WITHOUT ANY WARRANTY; without even the implied warranty of
 #	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #	GNU General Public License for more details.
 #
 #	You should have received a copy of the GNU General Public License
-#	along with pyRadar; if not, write to the Free Software
+#	along with radarWatch; if not, write to the Free Software
 #	Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #
 #########################################################################################
@@ -58,6 +58,7 @@ import string
 from datetime import datetime
 
 import sqlite3
+import zmq
 
 # check for compatable python version
 pythonver = sys.version_info
@@ -106,11 +107,11 @@ RADAR_HEIGHT = 550
 #INTERPOLATION_TYPE = gtk.gdk.INTERP_NEAREST
 
 # Begin code
-##class pyRadar:
+##class radarWatch:
 #
 #	def __init__(self):
 #		##get install path
-#		#f = open(os.path.normpath('/etc/pyRadar/here'))
+#		#f = open(os.path.normpath('/etc/radarWatch/here'))
 #		#self.inspath = str(f.readline()).strip()
 #		#f.close()
 #		##create config directory
@@ -121,13 +122,13 @@ RADAR_HEIGHT = 550
 #		#Linux Setup
 #		self.gladefile = os.path.normpath('./pyradar.glade')
 #		try:
-#			f = open(os.path.expanduser(os.path.normpath('./pyRadar.gif')))
+#			f = open(os.path.expanduser(os.path.normpath('./radarWatch.gif')))
 #			haveFile = 1
 #			f.close()
 #		except:
 #			haveFile = 0
 #		#if haveFile == 0:
-#			#shutil.copy(os.path.normpath(self.inspath+'/lib/pyRadar/images/pyRadar.gif'),os.path.expanduser(os.path.normpath('~/.pyradar/images/pyRadar.gif')))
+#			#shutil.copy(os.path.normpath(self.inspath+'/lib/radarWatch/images/radarWatch.gif'),os.path.expanduser(os.path.normpath('~/.pyradar/images/radarWatch.gif')))
 #		haveFile = 0
 #		#try:
 #			#f = open(os.path.expanduser(os.path.normpath('~/.pyradar/NOAA-Stations.csv')))
@@ -136,7 +137,7 @@ RADAR_HEIGHT = 550
 #		#except:
 #			#haveFile = 0
 #		#if haveFile == 0:
-#				#shutil.copy(os.path.normpath(self.inspath+'/lib/pyRadar/NOAA-Stations.csv'),os.path.expanduser(os.path.normpath('~/.pyradar/NOAA-Stations.csv')))
+#				#shutil.copy(os.path.normpath(self.inspath+'/lib/radarWatch/NOAA-Stations.csv'),os.path.expanduser(os.path.normpath('~/.pyradar/NOAA-Stations.csv')))
 #		#Setup widget tree
 #		self.wTree = gtk.glade.XML(self.gladefile, "radardialog")
 #		#self.dialog = gtk.glade.XML(self.gladefile, "window2")
@@ -185,7 +186,7 @@ RADAR_HEIGHT = 550
 #		self.wTree.get_widget("countycheck").set_active(1)
 #
 #		self.radarview = self.wTree.get_widget("radarimage1")
-#		self.radarview.set_from_file(os.path.expanduser(os.path.normpath('./images/pyRadar.gif')))
+#		self.radarview.set_from_file(os.path.expanduser(os.path.normpath('./images/radarWatch.gif')))
 #
 #		eventbox = self.wTree.get_widget("eventbox1")
 #		#self.radarview.add_events(gtk.gdk.BUTTON_PRESS_MASK)
@@ -660,7 +661,7 @@ RADAR_HEIGHT = 550
 #
 
 
-class pyRadar:
+class radarWatch:
 
 	def __init__(self):
 		parser = OptionParser()		
@@ -668,9 +669,19 @@ class pyRadar:
 			help="path to radar files")
 		(options, args) = parser.parse_args()
 
-		archive = nexradGifArchive(fsPath=radarPath)
-		archive.scanRadarDirectory()
-		archive.processImages()
+		self.context = zmq.Context()
+
+		# Socket to send messages on
+		self.processor = self.context.socket(zmq.REQ)
+		self.processor.connect("tcp://localhost:5555")
+
+		# Socket with direct access to the sink: used to syncronize start of batch
+#		self.sink = self.context.socket(zmq.PUSH)
+#		self.sink.connect("tcp://localhost:5558")
+
+		self.archive = nexradGifArchive(fsPath=radarPath, processor=self.processor)
+		self.archive.scanRadarDirectory()
+		self.archive.processImages()
 
 
 class epoch:
@@ -725,12 +736,16 @@ class nexradGif:
 	def __init__(self, filename, timestamp):
 		self.filename = filename
 		self.timestamp = timestamp
+		self.unixepoch = (timestamp - datetime(1970,1,1)).total_seconds()
 	
 	def getFilename(self):
 		return self.filename
 
 	def getTimestamp(self):
 		return self.timestamp
+
+	def getUnixEpoch(self):
+		return self.unixepoch
 
 	def process(self):
 		# Hand off to our C module to process
@@ -740,11 +755,12 @@ class nexradGif:
 
 class nexradGifArchive: # extends radarImagePath:
 
-	def __init__(self, stationID='DIX', NOAAProduct='NCR', fsPath="."):
+	def __init__(self, processor, stationID='DIX', NOAAProduct='NCR', fsPath="."):
 		self.radarType = {}
 		self.stationID = stationID
 		self.radarType['NOAAProd'] = NOAAProduct;
 		self.dataPath = fsPath
+		self.processor = processor 
 
 
 	# Populate radarFiles with files in radar directory matching regex
@@ -769,6 +785,9 @@ class nexradGifArchive: # extends radarImagePath:
 			#newImage = radarImage(
 			#print '%d %d %d %d %d' % (year, month, day, hour, minute)
 
+			# Do we compute epoch here too (UNIX-timestamp)?
+			# Definitely should be sorting on epoch (seconds since 1/1/70)
+			# especially if incorporating multiple stations
 			timestamp = datetime(year, month, day, hour, minute)
 			#timePeriod = epoch(timestamp)
 
@@ -776,13 +795,19 @@ class nexradGifArchive: # extends radarImagePath:
 			self.radarFiles.append(radarImage)
 
 		# This is crucial for computing epochs correctly
-		self.radarFiles = sorted(self.radarFiles, key=lambda item: item.getFilename())
+		# Sort by timestamp! (epoch)
+		# TODO: this will break if using more then one station in the same image pool
+		# Should sort by timestamp, not filename
+		#self.radarFiles = sorted(self.radarFiles, key=lambda item: item.getFilename())
+		self.radarFiles = sorted(self.radarFiles, key=lambda item: item.getUnixEpoch())
 
 		print "done, %d/%d found" % (len(self.radarFiles), totalCount)
 		return len(self.radarFiles)
 
 
 	def processImages(self):
+		#sink.send('0')
+
 		timestamp = 0
 		fileCheckedCount = 0
 		radarFileCount = len(self.radarFiles)
@@ -803,16 +828,25 @@ class nexradGifArchive: # extends radarImagePath:
 
 			fileCheckedCount += 1
 			#epoch = timedelta(timestamp)
-			print "\n\nradar image : %d/%d" % (fileCheckedCount, radarFileCount)
-			print "source image : %s" % image.getFilename()
-			print "timestamp : %s, epoch = %d" % (timestamp.ctime(), (timestamp - datetime(1970,1,1)).total_seconds())
+			print "\n\nradar image : %s [%d/%d]" % (image.getFilename(), fileCheckedCount, radarFileCount)
+			print "timestamp : %s, epoch = %d..." % (timestamp.ctime(), image.getUnixEpoch()),
 
-			result = image.process()
+			self.processor.send(image.getFilename())
+			ret = self.processor.recv()
+			if ret == 'ACK':
+				print "OK"
+			else:
+				print ret
+			#break
 
 
 	# Parse timstamps on radarFiles and compute epochs (sort and search for gaps)
-	def computeRadarEpochs(self):
+	# TODO: Should be changed into a post-analysis cleanup/compaction routine
+	#def computeRadarEpochs(self):
+	def groupRadarTimeSeries(self):
 		#epochlist = open('epochs.csv', 'w')
+
+		return True
 
 		fileCheckedCount = 0
 		radarFileCount = len(self.radarFiles)
@@ -1154,9 +1188,9 @@ class nexradGifArchive: # extends radarImagePath:
 # Simple Gtk main()
 
 #instance = radarImagePathGif() 
-instance = pyRadar()
+instance = radarWatch()
 #instance = nexradGifArchive()
-#app=pyRadar()
+#app=radarWatch()
 #gtk.main()
 
 # The End
@@ -1194,7 +1228,7 @@ instance = pyRadar()
 				##print "got image "+str(self.curframe)+" "+loopedImages[y]
 			#except:
 				##print 'ERROR loading: http://weather.gov/radar/images/DS.'+curRadar+'/SI.'+stID+'/'+loopedImages[y]+"."
-				#s#hutil.copy(os.path.expanduser(os.path.normpath('./images/pyRadar.gif')),os.path.expanduser(os.path.normpath('./images/fr'+str(self.curframe)+'.gif')))
+				#s#hutil.copy(os.path.expanduser(os.path.normpath('./images/radarWatch.gif')),os.path.expanduser(os.path.normpath('./images/fr'+str(self.curframe)+'.gif')))
 			#if self.firstLoop == 1:
 				##x = 9
 				##while x > 0:
